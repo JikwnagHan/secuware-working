@@ -66,6 +66,168 @@ function Invoke-SafeDownload {
     }
 }
 
+function Ensure-Directory {
+    param([Parameter(Mandatory)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        New-Item -ItemType Directory -Path $Path -Force | Out-Null
+    }
+}
+
+function Clear-Directory {
+    param([Parameter(Mandatory)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return }
+
+    Get-ChildItem -LiteralPath $Path -Force | ForEach-Object {
+        try {
+            Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction Stop
+        }
+        catch {
+            Write-Warning "폴더 정리 중 오류가 발생했습니다: $($_.FullName) → $($_.Exception.Message)"
+        }
+    }
+}
+
+function Write-BytesFile {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][byte[]]$Bytes
+    )
+
+    $parent = Split-Path -Path $Path -Parent
+    if ($parent) { Ensure-Directory -Path $parent }
+    [System.IO.File]::WriteAllBytes($Path, $Bytes)
+}
+
+function Write-TextFile {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Content
+    )
+
+    $parent = Split-Path -Path $Path -Parent
+    if ($parent) { Ensure-Directory -Path $parent }
+    Set-Content -LiteralPath $Path -Value $Content -Encoding UTF8
+}
+
+function Write-Base64File {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Base64
+    )
+
+    $parent = Split-Path -Path $Path -Parent
+    if ($parent) { Ensure-Directory -Path $parent }
+    try {
+        $bytes = [System.Convert]::FromBase64String(($Base64 -replace '\s', ''))
+        [System.IO.File]::WriteAllBytes($Path, $bytes)
+    }
+    catch {
+        throw "Base64 데이터를 디코딩하지 못했습니다: $($_.Exception.Message)"
+    }
+}
+
+function New-ZipSample {
+    param(
+        [Parameter(Mandatory)][string]$DestinationPath,
+        [Parameter(Mandatory)][hashtable]$SourceContent
+    )
+
+    $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
+    New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+    try {
+        foreach ($name in $SourceContent.Keys) {
+            $filePath = Join-Path $tempRoot $name
+            Write-TextFile -Path $filePath -Content $SourceContent[$name]
+        }
+        if (Test-Path -LiteralPath $DestinationPath) {
+            Remove-Item -LiteralPath $DestinationPath -Force -ErrorAction SilentlyContinue
+        }
+        Compress-Archive -Path (Join-Path $tempRoot '*') -DestinationPath $DestinationPath -Force
+    }
+    finally {
+        if (Test-Path -LiteralPath $tempRoot) {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Get-SharedTestDataset {
+    if (-not $script:SharedTestDataset) {
+        $seed = Get-Random -Maximum 1000000
+        $rand = [System.Random]::new($seed)
+        $sizeOptions = @(65536, 262144, 1048576)
+        $docExtensions = @('doc','docx','ppt','pptx','xls','xlsx','hwp','hwpx','txt')
+        $documentPlan = [System.Collections.Generic.List[object]]::new()
+
+        foreach ($ext in $docExtensions) {
+            $size = $sizeOptions[$rand.Next(0, $sizeOptions.Count)]
+            $fileName = "sample_{0}_{1}.{0}" -f $ext, $size
+            $bytes = New-Object byte[] $size
+            $rand.NextBytes($bytes)
+            $documentPlan.Add([pscustomobject]@{ FileName = $fileName; Bytes = $bytes }) | Out-Null
+        }
+
+        $usrClassBytes = New-Object byte[] 4096
+        $rand.NextBytes($usrClassBytes)
+        $dllBytes = New-Object byte[] 32768
+        $rand.NextBytes($dllBytes)
+
+        $script:SharedTestDataset = [pscustomobject]@{
+            Seed          = $seed
+            DocumentPlan  = $documentPlan
+            UsrClassBytes = $usrClassBytes
+            DllBytes      = $dllBytes
+        }
+
+        Write-Host "평가용 샘플 데이터가 감지되지 않아 자동으로 구성합니다. (Seed: $seed)" -ForegroundColor Yellow
+    }
+
+    return $script:SharedTestDataset
+}
+
+function Initialize-TestDatasetForArea {
+    param(
+        [Parameter(Mandatory)][string]$AreaName,
+        [Parameter(Mandatory)][string]$DocsPath,
+        [Parameter(Mandatory)][string]$SysCfgPath
+    )
+
+    $dataset = Get-SharedTestDataset
+
+    Clear-Directory -Path $DocsPath
+    Clear-Directory -Path $SysCfgPath
+    Ensure-Directory -Path $DocsPath
+    Ensure-Directory -Path $SysCfgPath
+
+    foreach ($plan in $dataset.DocumentPlan) {
+        $target = Join-Path $DocsPath $plan.FileName
+        Write-BytesFile -Path $target -Bytes ([byte[]]$plan.Bytes.Clone())
+    }
+
+    Write-TextFile -Path (Join-Path $SysCfgPath 'hosts_sample.txt') -Content "127.0.0.1 localhost`n# 테스트용 호스트 파일"
+    Write-TextFile -Path (Join-Path $SysCfgPath 'system.env') -Content "APP_ENV=Test`nTRACE=true"
+    Write-TextFile -Path (Join-Path $SysCfgPath 'appsettings.json') -Content '{"Logging":{"Level":"Information"},"ConnectionStrings":{"Primary":"Server=127.0.0.1;Database=Test"}}'
+    Write-TextFile -Path (Join-Path $SysCfgPath 'config.ini') -Content "[General]`nName=TestSystem`nMode=Simulation"
+    Write-TextFile -Path (Join-Path $SysCfgPath 'registry_backup.reg') -Content "Windows Registry Editor Version 5.00`n[HKEY_LOCAL_MACHINE\\SOFTWARE\\SampleCompany]`n\"AreaName\"=\"TestArea\""
+    Write-TextFile -Path (Join-Path $SysCfgPath 'sample.csv') -Content "Name,Value`nSample,123"
+    Write-TextFile -Path (Join-Path $SysCfgPath 'settings.config') -Content "<?xml version='1.0' encoding='utf-8'?><configuration><appSettings><add key='Mode' value='Test'/></appSettings></configuration>"
+
+    Write-BytesFile -Path (Join-Path $SysCfgPath 'system_like_UsrClass.dat') -Bytes ([byte[]]$dataset.UsrClassBytes.Clone())
+    Write-BytesFile -Path (Join-Path $SysCfgPath 'sample.dll') -Bytes ([byte[]]$dataset.DllBytes.Clone())
+
+    $pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/w8AAuMB9o0sRL8AAAAASUVORK5CYII='
+    Write-Base64File -Path (Join-Path $SysCfgPath 'image_1x1.png') -Base64 $pngBase64
+
+    $jpgBase64 = '/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAAkGBxISEhUTEhIVFRUVFxUVFRUVFRUVFRUWFhUVFRUYHSggGBolGxUVITEhJSkrLi4uFx8zODMtNygtLisBCgoKDg0OGxAQGy0lHyUtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLf/AABEIAKgBLAMBIgACEQEDEQH/xAAaAAEAAwEBAQAAAAAAAAAAAAAAAQIDBAUG/8QAMRAAAgEDAwIEBQMFAQAAAAAAAAECEQMhMQQSQRNRYXGRBiKBkaGx8BQjQlJy4fDx/8QAFQEBAQAAAAAAAAAAAAAAAAAAAQP/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwD1gAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAH/9k='
+    Write-Base64File -Path (Join-Path $SysCfgPath 'image_1x1.jpg') -Base64 $jpgBase64
+
+    New-ZipSample -DestinationPath (Join-Path $SysCfgPath 'sample.zip') -SourceContent @{ 'readme.txt' = '이 ZIP 파일은 테스트 자동화에서 생성되었습니다.' }
+
+    Write-Host "[$AreaName] 평가용 샘플 데이터를 자동으로 구성했습니다." -ForegroundColor Cyan
+}
+
 function Read-ValidatedPath {
     [CmdletBinding()]
     param(
@@ -167,15 +329,8 @@ function Initialize-AreaData {
     $workspace   = Join-Path $TargetPath '_AssessmentWorkspace'
     $scriptsDir  = Join-Path $workspace 'Scripts'
 
-    if (-not (Test-Path -LiteralPath $documentDir)) {
-        Write-Warning "[$AreaName] Docs 폴더가 없어 새로 생성합니다. 실제 평가에는 사전 준비된 파일을 배치해 주세요."
-        New-Item -ItemType Directory -Path $documentDir -Force | Out-Null
-    }
-    if (-not (Test-Path -LiteralPath $systemDir)) {
-        Write-Warning "[$AreaName] SysCfg 폴더가 없어 새로 생성합니다. 실제 평가에는 사전 준비된 파일을 배치해 주세요."
-        New-Item -ItemType Directory -Path $systemDir -Force | Out-Null
-    }
-
+    Ensure-Directory -Path $documentDir
+    Ensure-Directory -Path $systemDir
     New-Item -ItemType Directory -Path $workspace,$scriptsDir -Force | Out-Null
 
     $operationPaths = [pscustomobject]@{
@@ -195,57 +350,64 @@ function Initialize-AreaData {
 
     New-Item -ItemType Directory -Path $operationPaths.DocsArchiveExtract,$operationPaths.SysArchiveExtract,$operationPaths.ExfilRoot,$operationPaths.DiscoveryFolder -Force | Out-Null
 
+    $requiredDocExts = @('doc','docx','ppt','pptx','xls','xlsx','hwp','hwpx','txt')
+    $requiredSystemNames = @('hosts_sample.txt','system.env','appsettings.json','config.ini','registry_backup.reg','sample.csv','settings.config','system_like_UsrClass.dat','sample.dll','image_1x1.png','image_1x1.jpg','sample.zip')
+
+    $docFiles = @(Get-ChildItem -Path $documentDir -File -Recurse -ErrorAction SilentlyContinue)
+    $systemFiles = @(Get-ChildItem -Path $systemDir -File -Recurse -ErrorAction SilentlyContinue)
+
+    $missingDocExts = @()
+    foreach ($ext in $requiredDocExts) {
+        if (-not ($docFiles | Where-Object { $_.Extension.TrimStart('.').ToLowerInvariant() -eq $ext })) {
+            $missingDocExts += $ext
+        }
+    }
+
+    $missingSystem = @()
+    foreach ($name in $requiredSystemNames) {
+        if (-not ($systemFiles | Where-Object { $_.Name -ieq $name })) {
+            $missingSystem += $name
+        }
+    }
+
+    if ($missingDocExts.Count -gt 0 -or $missingSystem.Count -gt 0) {
+        Initialize-TestDatasetForArea -AreaName $AreaName -DocsPath $documentDir -SysCfgPath $systemDir
+        $docFiles = @(Get-ChildItem -Path $documentDir -File -Recurse -ErrorAction SilentlyContinue)
+        $systemFiles = @(Get-ChildItem -Path $systemDir -File -Recurse -ErrorAction SilentlyContinue)
+    }
+
     $docIndex = @{}
     $manifest = New-Object System.Collections.Generic.List[object]
-    if (Test-Path -LiteralPath $documentDir) {
-        $docFiles = Get-ChildItem -Path $documentDir -File -Recurse -ErrorAction SilentlyContinue
-        foreach ($file in $docFiles) {
-            $ext = $file.Extension.TrimStart('.').ToLowerInvariant()
-            if ([string]::IsNullOrWhiteSpace($ext)) { continue }
-            if (-not $docIndex.ContainsKey($ext)) {
-                $docIndex[$ext] = $file.FullName
-            }
-            $manifest.Add([pscustomobject]@{
-                Category  = 'Docs'
-                Extension = $ext
-                SizeBytes = $file.Length
-                FilePath  = $file.FullName
-            }) | Out-Null
+    foreach ($file in $docFiles) {
+        $ext = $file.Extension.TrimStart('.').ToLowerInvariant()
+        if ([string]::IsNullOrWhiteSpace($ext)) { continue }
+        if (-not $docIndex.ContainsKey($ext)) {
+            $docIndex[$ext] = $file.FullName
         }
+        $manifest.Add([pscustomobject]@{
+            Category  = 'Docs'
+            Extension = $ext
+            SizeBytes = $file.Length
+            FilePath  = $file.FullName
+        }) | Out-Null
     }
 
     $systemIndex = @{}
-    if (Test-Path -LiteralPath $systemDir) {
-        $systemFiles = Get-ChildItem -Path $systemDir -File -Recurse -ErrorAction SilentlyContinue
-        foreach ($file in $systemFiles) {
-            $ext = $file.Extension.TrimStart('.').ToLowerInvariant()
-            $name = $file.Name.ToLowerInvariant()
-            if (-not [string]::IsNullOrWhiteSpace($ext) -and -not $systemIndex.ContainsKey($ext)) {
-                $systemIndex[$ext] = $file.FullName
-            }
-            if (($name -eq 'hosts' -or $name -eq 'hosts_copy') -and -not $systemIndex.ContainsKey('hosts')) {
-                $systemIndex['hosts'] = $file.FullName
-            }
-            $manifest.Add([pscustomobject]@{
-                Category  = 'SysCfg'
-                Extension = if ([string]::IsNullOrWhiteSpace($ext)) { $name } else { $ext }
-                SizeBytes = $file.Length
-                FilePath  = $file.FullName
-            }) | Out-Null
+    foreach ($file in $systemFiles) {
+        $ext = $file.Extension.TrimStart('.').ToLowerInvariant()
+        $name = $file.Name.ToLowerInvariant()
+        if (-not [string]::IsNullOrWhiteSpace($ext) -and -not $systemIndex.ContainsKey($ext)) {
+            $systemIndex[$ext] = $file.FullName
         }
-    }
-
-    $expectedDocs = @('doc','docx','ppt','pptx','xls','xlsx','hwp','hwpx','txt')
-    foreach ($ext in $expectedDocs) {
-        if (-not $docIndex.ContainsKey($ext)) {
-            Write-Warning "[$AreaName] .$ext 문서를 찾지 못했습니다. 해당 확장자를 평가에 포함하려면 폴더에 파일을 추가하세요."
+        if (($name -eq 'hosts' -or $name -eq 'hosts_copy' -or $name -eq 'hosts_sample.txt') -and -not $systemIndex.ContainsKey('hosts')) {
+            $systemIndex['hosts'] = $file.FullName
         }
-    }
-
-    foreach ($key in @('env','json')) {
-        if (-not $systemIndex.ContainsKey($key)) {
-            Write-Warning "[$AreaName] 시스템 기준 파일($key) 을 찾지 못했습니다. 관련 테스트는 실패로 기록될 수 있습니다."
-        }
+        $manifest.Add([pscustomobject]@{
+            Category  = 'SysCfg'
+            Extension = if ([string]::IsNullOrWhiteSpace($ext)) { $name } else { $ext }
+            SizeBytes = $file.Length
+            FilePath  = $file.FullName
+        }) | Out-Null
     }
 
     return [pscustomobject]@{
