@@ -1,12 +1,12 @@
 <#
 .SYNOPSIS
-    보안영역과 일반영역에 예제 데이터를 만들고, 랜섬웨어 모의 침해 여부를 점검하는 자동화 스크립트입니다.
+    보안영역과 일반영역의 기존 데이터를 활용해 악성행위·랜섬웨어 침해 여부를 점검하는 자동화 스크립트입니다.
 
 .DESCRIPTION
     스크립트는 먼저 일반영역과 보안영역 폴더 위치, 결과 보고서를 저장할 폴더 위치를 묻습니다.
-    이어서 각 영역에 다양한 문서/시스템 형식의 예제 파일을 생성하여 랜섬웨어 감염 전 상태(기준 스냅샷)를 저장합니다.
-    RanSim, Atomic Red Team, Caldera 시뮬레이터 설치 여부를 확인하고 필요 시 설치 안내를 제공합니다.
-    사용자가 시뮬레이터 실행을 마치면, 최초 스냅샷과 비교하여 변경·삭제·신규 파일을 찾아 침해 징후를 보고합니다.
+    이어서 각 영역에 이미 존재하는 문서/시스템 데이터를 그대로 스캔하여 랜섬웨어 감염 전 상태(기준 스냅샷)를 저장합니다.
+    RanSim, Atomic Red Team, Caldera 시뮬레이터 설치 여부를 확인하고 필요 시 자동 다운로드·재시도·수동 경로 입력 안내를 제공합니다.
+    악성 시뮬레이션과 랜섬웨어 테스트 이후 최초 스냅샷과 비교해 변경·삭제·신규 파일을 찾아 침해 징후를 보고합니다.
     결과는 CSV 및 JSON 파일로 저장되며, 모든 과정은 관리자 권한의 PowerShell에서 실행해야 합니다.
 
 .NOTES
@@ -1353,11 +1353,35 @@ function Ensure-RanSim {
     $downloadUrl = 'https://assets.knowbe4.com/download/ransim/KnowBe4RanSim.zip'
     $localZip    = Join-Path $StagingPath 'KnowBe4RanSim.zip'
     $installerPath = $null
-    $downloadResult = Invoke-SafeDownload -Uri $downloadUrl -OutFile $localZip -SkipIfExists
-    if ($downloadResult.Success) {
+    $downloadAttempts = 0
+    $maxAttempts = 2
+    while (-not $installerPath -and $downloadAttempts -lt $maxAttempts) {
+        $downloadAttempts++
+        $skipExisting = ($downloadAttempts -eq 1)
+        $downloadResult = Invoke-SafeDownload -Uri $downloadUrl -OutFile $localZip -SkipIfExists:$skipExisting
+        if (-not $downloadResult.Success) {
+            Write-Warning 'RanSim 패키지를 자동으로 내려받지 못했습니다. 제공된 안내에 따라 수동으로 패키지를 준비한 후 스크립트를 다시 실행해 주세요.'
+            break
+        }
+
         Write-Host "RanSim 설치 패키지를 다운로드했습니다: $localZip"
-        Expand-Archive -Path $localZip -DestinationPath $StagingPath -Force
-        $installer = Get-ChildItem -Path $StagingPath -Filter 'RanSim*.msi' -Recurse | Select-Object -First 1
+        try {
+            Expand-Archive -Path $localZip -DestinationPath $StagingPath -Force
+        }
+        catch {
+            Write-Warning "RanSim 압축 해제 중 오류 발생(시도 $downloadAttempts/$maxAttempts): $($_.Exception.Message)"
+            Remove-Item -LiteralPath $localZip -Force -ErrorAction SilentlyContinue
+            if ($downloadAttempts -ge $maxAttempts) {
+                break
+            }
+            else {
+                Write-Host '손상된 설치 패키지를 삭제하고 재다운로드합니다.' -ForegroundColor Yellow
+                continue
+            }
+        }
+
+        Remove-Item -LiteralPath $localZip -Force -ErrorAction SilentlyContinue
+        $installer = Get-ChildItem -Path $StagingPath -Include 'RanSim*.msi','RanSim*.exe' -Recurse -File | Select-Object -First 1
         if ($null -ne $installer) {
             $installerPath = $installer.FullName
         }
@@ -1365,13 +1389,22 @@ function Ensure-RanSim {
             Write-Warning 'RanSim 설치 파일을 찾지 못했습니다. 압축 해제된 폴더를 확인하세요.'
         }
     }
-    else {
-        Write-Warning 'RanSim 패키지를 자동으로 내려받지 못했습니다. 제공된 안내에 따라 수동으로 패키지를 준비한 후 스크립트를 다시 실행해 주세요.'
-        $manualPath = Read-Host 'RanSim 설치 파일(.msi 또는 .exe) 전체 경로를 입력하세요 (Enter 입력 시 건너뜀)'
+
+    if (-not $installerPath) {
+        $manualPath = Read-Host 'RanSim 설치 파일(.msi 또는 .exe) 경로 또는 폴더를 입력하세요 (Enter 입력 시 건너뜀)'
         if (-not [string]::IsNullOrWhiteSpace($manualPath)) {
             try {
                 $resolved = (Resolve-Path -Path $manualPath -ErrorAction Stop).ProviderPath
-                if (Test-Path -LiteralPath $resolved) {
+                if (Test-Path -LiteralPath $resolved -PathType Container) {
+                    $manualCandidate = Get-ChildItem -Path $resolved -Include '*.msi','*.exe' -File -Recurse | Select-Object -First 1
+                    if ($manualCandidate) {
+                        $installerPath = $manualCandidate.FullName
+                    }
+                    else {
+                        Write-Warning '제공된 폴더에서 .msi 또는 .exe 파일을 찾지 못했습니다.'
+                    }
+                }
+                elseif (Test-Path -LiteralPath $resolved -PathType Leaf) {
                     $installerPath = $resolved
                 }
             }
@@ -1489,19 +1522,48 @@ function Ensure-AtomicRedTeam {
                 New-Item -ItemType Directory -Path $downloadRoot -Force | Out-Null
             }
 
-            $zipPath = Join-Path $downloadRoot 'atomic-red-team.zip'
-            $downloadResult = Invoke-SafeDownload -Uri $repoUrl -OutFile $zipPath -SkipIfExists
-            if (-not $downloadResult.Success) {
-                throw $downloadResult.Error
-            }
-            Expand-Archive -Path $zipPath -DestinationPath $downloadRoot -Force
-            Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
+            $zipPath        = Join-Path $downloadRoot 'atomic-red-team.zip'
+            $expandedFolder = Join-Path $downloadRoot 'atomic-red-team-master'
+            $attempt        = 0
+            $maxAttempts    = 2
 
-            $expanded = Join-Path $downloadRoot 'atomic-red-team-master'
-            $atomicsPath = Resolve-AtomicsFolder -PreferredPaths @(
-                (Join-Path $expanded 'atomics'),
-                (Join-Path $downloadRoot 'atomics')
-            )
+            while (-not $atomicsPath -and $attempt -lt $maxAttempts) {
+                $attempt++
+                $skipExisting = ($attempt -eq 1)
+                $downloadResult = Invoke-SafeDownload -Uri $repoUrl -OutFile $zipPath -SkipIfExists:$skipExisting
+                if (-not $downloadResult.Success) {
+                    throw $downloadResult.Error
+                }
+
+                try {
+                    if (Test-Path -LiteralPath $expandedFolder) {
+                        Remove-Item -LiteralPath $expandedFolder -Recurse -Force -ErrorAction SilentlyContinue
+                    }
+                    Expand-Archive -Path $zipPath -DestinationPath $downloadRoot -Force
+                }
+                catch {
+                    Write-Warning "Atomics 패키지 압축 해제 실패(시도 $attempt/$maxAttempts): $($_.Exception.Message)"
+                    Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
+                    if ($attempt -ge $maxAttempts) {
+                        throw
+                    }
+                    else {
+                        Write-Host '손상된 압축 파일을 제거하고 다시 다운로드합니다.' -ForegroundColor Yellow
+                        continue
+                    }
+                }
+
+                Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
+
+                $atomicsPath = Resolve-AtomicsFolder -PreferredPaths @(
+                    (Join-Path $expandedFolder 'atomics'),
+                    (Join-Path $downloadRoot 'atomics')
+                )
+
+                if (-not $atomicsPath -and $attempt -lt $maxAttempts) {
+                    Write-Warning '다운로드/압축 후에도 atomics 폴더를 찾지 못했습니다. 재시도합니다.'
+                }
+            }
 
             if ($atomicsPath) {
                 Write-Host "Atomic Red Team Atomics 데이터를 다운로드하여 배치했습니다: $atomicsPath" -ForegroundColor Green
@@ -1539,17 +1601,40 @@ function Ensure-Caldera {
     Write-Warning 'Caldera가 설치되어 있지 않습니다. GitHub 릴리스를 자동으로 내려받아 압축을 풉니다.'
     $downloadUrl = 'https://github.com/mitre/caldera/archive/refs/heads/master.zip'
     $localZip    = Join-Path $StagingPath 'caldera-master.zip'
-    $downloadResult = Invoke-SafeDownload -Uri $downloadUrl -OutFile $localZip -SkipIfExists
-    if ($downloadResult.Success) {
+    $downloadAttempts = 0
+    $maxAttempts = 2
+    while ($downloadAttempts -lt $maxAttempts) {
+        $downloadAttempts++
+        $skipExisting = ($downloadAttempts -eq 1)
+        $downloadResult = Invoke-SafeDownload -Uri $downloadUrl -OutFile $localZip -SkipIfExists:$skipExisting
+        if (-not $downloadResult.Success) {
+            break
+        }
+
         Write-Host "Caldera 패키지를 다운로드했습니다: $localZip"
         $destination = Join-Path $StagingPath 'caldera-master'
-        Expand-Archive -Path $localZip -DestinationPath $destination -Force
-        Write-Host 'Caldera 압축을 해제했습니다. 가상 환경 및 서버 기동은 README 절차에 따라 진행하세요.' -ForegroundColor Yellow
-        return $destination
+        try {
+            if (Test-Path -LiteralPath $destination) {
+                Remove-Item -LiteralPath $destination -Recurse -Force -ErrorAction SilentlyContinue
+            }
+            Expand-Archive -Path $localZip -DestinationPath $destination -Force
+            Remove-Item -LiteralPath $localZip -Force -ErrorAction SilentlyContinue
+            Write-Host 'Caldera 압축을 해제했습니다. 가상 환경 및 서버 기동은 README 절차에 따라 진행하세요.' -ForegroundColor Yellow
+            return $destination
+        }
+        catch {
+            Write-Warning "Caldera 압축 해제 중 오류 발생(시도 $downloadAttempts/$maxAttempts): $($_.Exception.Message)"
+            Remove-Item -LiteralPath $localZip -Force -ErrorAction SilentlyContinue
+            if ($downloadAttempts -ge $maxAttempts) {
+                break
+            }
+            else {
+                Write-Host '손상된 패키지를 삭제하고 다시 다운로드합니다.' -ForegroundColor Yellow
+            }
+        }
     }
-    else {
-        Write-Warning 'Caldera 패키지를 자동으로 확보하지 못했습니다. 공식 저장소에서 수동으로 내려받아 임시 폴더에 배치한 뒤 재실행해 주세요.'
-    }
+
+    Write-Warning 'Caldera 패키지를 자동으로 확보하지 못했습니다. 공식 저장소에서 수동으로 내려받아 임시 폴더에 배치한 뒤 재실행해 주세요.'
     return $null
 }
 
