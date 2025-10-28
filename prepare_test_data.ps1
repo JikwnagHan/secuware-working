@@ -42,17 +42,14 @@ function Clear-Directory {
     }
 }
 
-function Write-RandomFile {
+function Write-BytesFile {
     param(
         [string] $Path,
-        [int] $SizeBytes,
-        [System.Random] $Random
+        [byte[]] $Bytes
     )
     $folder = Split-Path -Path $Path -Parent
     Ensure-Directory -Path $folder
-    $bytes = New-Object byte[] $SizeBytes
-    $Random.NextBytes($bytes)
-    [System.IO.File]::WriteAllBytes($Path, $bytes)
+    [System.IO.File]::WriteAllBytes($Path, $Bytes)
 }
 
 function Write-TextFile {
@@ -104,7 +101,9 @@ function Initialize-Area {
     param(
         [string] $AreaName,
         [string] $RootPath,
-        [System.Random] $Random
+        [System.Collections.IEnumerable] $DocumentPlan,
+        [byte[]] $UsrClassBytes,
+        [byte[]] $DllBytes
     )
 
     Write-Host "[$AreaName] 폴더를 준비합니다: $RootPath"
@@ -116,25 +115,20 @@ function Initialize-Area {
     Ensure-Directory -Path $docsPath
     Ensure-Directory -Path $sysPath
 
-    $sizeOptions = @(65536, 262144, 1048576)
-    $docExtensions = @('doc','docx','ppt','pptx','xls','xlsx','hwp','hwpx','txt')
-
-    foreach ($ext in $docExtensions) {
-        $size = $sizeOptions[$Random.Next(0, $sizeOptions.Count)]
-        $fileName = "sample_{0}_{1}.{0}" -f $ext, $size
-        $filePath = Join-Path $docsPath $fileName
-        Write-RandomFile -Path $filePath -SizeBytes $size -Random $Random
+    foreach ($plan in $DocumentPlan) {
+        $filePath = Join-Path $docsPath $plan.FileName
+        Write-BytesFile -Path $filePath -Bytes ([byte[]]$plan.Bytes.Clone())
     }
 
     Write-TextFile -Path (Join-Path $sysPath 'hosts_sample.txt') -Content "127.0.0.1 localhost`n# 테스트용 호스트 파일"
     Write-TextFile -Path (Join-Path $sysPath 'system.env') -Content "APP_ENV=Test`nTRACE=true"
     Write-TextFile -Path (Join-Path $sysPath 'appsettings.json') -Content '{"Logging":{"Level":"Information"},"ConnectionStrings":{"Primary":"Server=127.0.0.1;Database=Test"}}'
     Write-TextFile -Path (Join-Path $sysPath 'config.ini') -Content "[General]`nName=TestSystem`nMode=Simulation"
-    Write-TextFile -Path (Join-Path $sysPath 'registry_backup.reg') -Content "Windows Registry Editor Version 5.00`n[HKEY_LOCAL_MACHINE\\SOFTWARE\\SampleCompany]`n\"SecureArea\"=\"$AreaName\""
+    Write-TextFile -Path (Join-Path $sysPath 'registry_backup.reg') -Content "Windows Registry Editor Version 5.00`n[HKEY_LOCAL_MACHINE\\SOFTWARE\\SampleCompany]`n\"AreaName\"=\"TestArea\""
     Write-TextFile -Path (Join-Path $sysPath 'sample.csv') -Content "Name,Value`nSample,123"
     Write-TextFile -Path (Join-Path $sysPath 'settings.config') -Content "<?xml version='1.0' encoding='utf-8'?><configuration><appSettings><add key='Mode' value='Test'/></appSettings></configuration>"
-    Write-RandomFile -Path (Join-Path $sysPath 'system_like_UsrClass.dat') -SizeBytes 4096 -Random $Random
-    Write-RandomFile -Path (Join-Path $sysPath 'sample.dll') -SizeBytes 32768 -Random $Random
+    Write-BytesFile -Path (Join-Path $sysPath 'system_like_UsrClass.dat') -Bytes ([byte[]]$UsrClassBytes.Clone())
+    Write-BytesFile -Path (Join-Path $sysPath 'sample.dll') -Bytes ([byte[]]$DllBytes.Clone())
 
     $pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/w8AAuMB9o0sRL8AAAAASUVORK5CYII='
     Write-Base64File -Path (Join-Path $sysPath 'image_1x1.png') -Base64 $pngBase64
@@ -157,8 +151,25 @@ if ($normalRoot -eq $secureRoot) {
 
 $seed = Get-Random -Maximum 1000000
 $rand = [System.Random]::new($seed)
-Initialize-Area -AreaName 'NormalArea' -RootPath $normalRoot -Random $rand
-Initialize-Area -AreaName 'SecureArea' -RootPath $secureRoot -Random $rand
+
+$sizeOptions = @(65536, 262144, 1048576)
+$docExtensions = @('doc','docx','ppt','pptx','xls','xlsx','hwp','hwpx','txt')
+$documentPlan = [System.Collections.Generic.List[object]]::new()
+foreach ($ext in $docExtensions) {
+    $size = $sizeOptions[$rand.Next(0, $sizeOptions.Count)]
+    $fileName = "sample_{0}_{1}.{0}" -f $ext, $size
+    $bytes = New-Object byte[] $size
+    $rand.NextBytes($bytes)
+    $documentPlan.Add([PSCustomObject]@{ FileName = $fileName; Bytes = $bytes })
+}
+
+$usrClassBytes = New-Object byte[] 4096
+$rand.NextBytes($usrClassBytes)
+$dllBytes = New-Object byte[] 32768
+$rand.NextBytes($dllBytes)
+
+Initialize-Area -AreaName 'NormalArea' -RootPath $normalRoot -DocumentPlan $documentPlan -UsrClassBytes $usrClassBytes -DllBytes $dllBytes
+Initialize-Area -AreaName 'SecureArea' -RootPath $secureRoot -DocumentPlan $documentPlan -UsrClassBytes $usrClassBytes -DllBytes $dllBytes
 
 Write-Host "사용된 난수 시드: $seed"
 Write-Host '=== 파일 생성이 완료되었습니다. ==='
