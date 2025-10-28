@@ -1007,6 +1007,7 @@ function Invoke-MalwareAssessment {
     $operationCsv = Join-Path $ReportPath ("Malware_Performance_Assessment_{0}.csv" -f $timestamp)
     $summaryCsv   = Join-Path $ReportPath ("Malware_Assessment_Summary_{0}.csv" -f $timestamp)
     $fileCsv      = Join-Path $ReportPath ("Malware_Assessment_FileStatus_{0}.csv" -f $timestamp)
+    $finalCsv     = Join-Path $ReportPath ("Malware_Assessment_FinalState_{0}.csv" -f $timestamp)
     $logPath      = Join-Path $ReportPath ("Malware_Assessment_Log_{0}.txt" -f $timestamp)
     "[Start] $(Get-Date -Format o) 악성코드 성능 검증을 시작합니다. Atomic 모듈 상태: $AtomicReady" | Out-File -FilePath $logPath -Encoding UTF8
 
@@ -1020,6 +1021,7 @@ function Invoke-MalwareAssessment {
     $operationEntries = New-Object System.Collections.Generic.List[object]
     $summaryEntries   = New-Object System.Collections.Generic.List[object]
     $fileEntries      = New-Object System.Collections.Generic.List[object]
+    $finalStateEntries= New-Object System.Collections.Generic.List[object]
     $areaImpact       = @{}
 
     foreach ($area in $Areas) {
@@ -1030,6 +1032,7 @@ function Invoke-MalwareAssessment {
 
         $areaEntries = New-Object System.Collections.Generic.List[object]
         $impactList  = New-Object System.Collections.Generic.List[object]
+        $lastSnapshot = Get-AreaSnapshot -AreaPath $area.Path -AreaName $area.Name
 
         foreach ($operation in $plan) {
             $atomicOutcome = 'Skipped'
@@ -1052,11 +1055,56 @@ function Invoke-MalwareAssessment {
                 }
             }
 
+            $preSnapshot = $lastSnapshot
             $result = Invoke-MalwareOperation -Operation $operation -Context $context
+            $postSnapshot = Get-AreaSnapshot -AreaPath $area.Path -AreaName $area.Name
+            $lastSnapshot = $postSnapshot
             $affected = if ($result.AffectedPaths) { $result.AffectedPaths } else { @() }
+            $opTimestamp = Get-Date
+            $testIdentifier = if ($operation.PSObject.Properties.Match('AtomicTestId').Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($operation.AtomicTestId)) { $operation.AtomicTestId }
+                              elseif (-not [string]::IsNullOrWhiteSpace($operation.Technique)) { $operation.Technique }
+                              else { "Op-$($operation.Id)" }
+            $resultLabel = if ($result.Success) { 'Success' } elseif ($atomicOutcome -eq 'Skipped') { 'Skipped' } else { 'Failed' }
+            $messageText = if (-not [string]::IsNullOrWhiteSpace($result.Message)) { $result.Message }
+                           elseif (-not [string]::IsNullOrWhiteSpace($atomicOutcome)) { $atomicOutcome }
+                           else { 'No additional details.' }
+
+            $preKeys = if ($preSnapshot) { @($preSnapshot.Keys) } else { @() }
+            $postKeys = if ($postSnapshot) { @($postSnapshot.Keys) } else { @() }
+            $allKeys = @((@($preKeys) + @($postKeys)) | Sort-Object -Unique)
+            foreach ($relative in $allKeys) {
+                $before = if ($preSnapshot -and $preSnapshot.ContainsKey($relative)) { $preSnapshot[$relative] } else { $null }
+                $after  = if ($postSnapshot -and $postSnapshot.ContainsKey($relative)) { $postSnapshot[$relative] } else { $null }
+                $fullPath = if ($after) { $after.Path }
+                             elseif ($before) { $before.Path }
+                             else { Join-Path $area.Path $relative }
+                $existsBefore = $null -ne $before
+                $existsAfter  = $null -ne $after
+                $sizeBefore   = if ($before) { $before.Length } else { 0 }
+                $sizeAfter    = if ($after) { $after.Length } else { 0 }
+                $hashBefore   = if ($before) { $before.Hash } else { $null }
+                $hashAfter    = if ($after) { $after.Hash } else { $null }
+                $changed      = ($existsBefore -and -not $existsAfter) -or (-not $existsBefore -and $existsAfter) -or ($existsBefore -and $existsAfter -and $hashBefore -ne $hashAfter)
+
+                $fileEntries.Add([pscustomobject]@{
+                    Timestamp      = $opTimestamp
+                    Area           = $area.Name
+                    FilePath       = $fullPath
+                    Exists_Before  = $existsBefore
+                    Size_Before    = $sizeBefore
+                    SHA256_Before  = $hashBefore
+                    Exists_After   = $existsAfter
+                    Size_After     = $sizeAfter
+                    SHA256_After   = $hashAfter
+                    Changed        = $changed
+                    Test           = $testIdentifier
+                    Result         = $resultLabel
+                    Message        = $messageText
+                }) | Out-Null
+            }
 
             $entry = [pscustomobject]@{
-                Timestamp      = Get-Date
+                Timestamp      = $opTimestamp
                 AreaName       = $area.Name
                 OperationId    = $operation.Id
                 Bucket         = $operation.Bucket
@@ -1086,11 +1134,11 @@ function Invoke-MalwareAssessment {
 
         $areaImpact[$area.Name] = $impactList
 
-        $currentSnapshot = Get-AreaSnapshot -AreaPath $area.Path -AreaName $area.Name
+        $currentSnapshot = $lastSnapshot
         $comparison = Compare-AreaSnapshots -Baseline $Baselines[$area.Name] -Current $currentSnapshot -AreaName $area.Name
 
         foreach ($record in $comparison.FileRecords) {
-            $fileEntries.Add([pscustomobject]@{
+            $finalStateEntries.Add([pscustomobject]@{
                 Timestamp    = Get-Date
                 AreaName     = $area.Name
                 RelativePath = $record.RelativePath
@@ -1182,18 +1230,21 @@ function Invoke-MalwareAssessment {
     $operationEntries | Export-Csv -Path $operationCsv -Encoding UTF8 -NoTypeInformation
     $summaryEntries   | Export-Csv -Path $summaryCsv -Encoding UTF8 -NoTypeInformation
     $fileEntries      | Export-Csv -Path $fileCsv -Encoding UTF8 -NoTypeInformation
+    $finalStateEntries| Export-Csv -Path $finalCsv -Encoding UTF8 -NoTypeInformation
     "[End] $(Get-Date -Format o) 결과 CSV: $operationCsv" | Out-File -FilePath $logPath -Append -Encoding UTF8
     "[Summary] $summaryCsv" | Out-File -FilePath $logPath -Append -Encoding UTF8
     "[Files] $fileCsv" | Out-File -FilePath $logPath -Append -Encoding UTF8
+    "[FinalState] $finalCsv" | Out-File -FilePath $logPath -Append -Encoding UTF8
 
     return [pscustomobject]@{
         OperationReport = $operationCsv
         SummaryReport   = $summaryCsv
         FileReport      = $fileCsv
+        FinalStateReport= $finalCsv
         AtomicsPath     = $atomicsPath
         Entries         = $operationEntries
         Summary         = $summaryEntries
-        FileRecords     = $fileEntries
+        FileRecords     = $finalStateEntries
     }
 }
 
@@ -1360,31 +1411,48 @@ function Ensure-RanSim {
         }
     }
 
-    Write-Warning 'RanSim이 설치되어 있지 않습니다. 공식 다운로드 페이지에서 설치를 진행합니다.'
+    Write-Warning 'RanSim이 설치되어 있지 않습니다. 최신 패키지를 자동으로 내려받아 설치합니다.'
     # 최신 RanSim 패키지 다운로드 주소입니다. 필요 시 보안망에서 미리 다운로드해 두세요.
     $downloadUrl = 'https://assets.knowbe4.com/download/ransim/KnowBe4RanSim.zip'
     $localZip    = Join-Path $StagingPath 'KnowBe4RanSim.zip'
-    $shouldDownload = Read-Host 'RanSim 패키지를 자동으로 다운로드하시겠습니까? (y/n)'
-    if ($shouldDownload -match '^[Yy]') {
-        try {
-            Invoke-WebRequest -Uri $downloadUrl -OutFile $localZip -UseBasicParsing
-            Write-Host "RanSim 설치 패키지를 다운로드했습니다: $localZip"
-            Expand-Archive -Path $localZip -DestinationPath $StagingPath -Force
-            $installer = Get-ChildItem -Path $StagingPath -Filter 'RanSim*.msi' -Recurse | Select-Object -First 1
-            if ($null -ne $installer) {
-                Write-Host 'RanSim 설치 관리자를 실행합니다 (수동 설치 필요).' -ForegroundColor Yellow
-                Start-Process msiexec.exe -ArgumentList "/i `"$($installer.FullName)`"" -Verb RunAs
+    try {
+        Invoke-WebRequest -Uri $downloadUrl -OutFile $localZip -UseBasicParsing
+        Write-Host "RanSim 설치 패키지를 다운로드했습니다: $localZip"
+        Expand-Archive -Path $localZip -DestinationPath $StagingPath -Force
+        $installer = Get-ChildItem -Path $StagingPath -Filter 'RanSim*.msi' -Recurse | Select-Object -First 1
+        if ($null -ne $installer) {
+            $arguments = "/i `"$($installer.FullName)`" /qn /norestart"
+            Write-Host 'RanSim 설치 관리자를 무인 설치 모드로 실행합니다.' -ForegroundColor Yellow
+            try {
+                $proc = Start-Process -FilePath msiexec.exe -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden -ErrorAction Stop
+                Write-Host "RanSim 설치 프로세스가 종료되었습니다 (ExitCode=$($proc.ExitCode))." -ForegroundColor Green
             }
-            else {
-                Write-Warning 'RanSim 설치 파일을 찾지 못했습니다. 압축 해제된 폴더를 확인하세요.'
+            catch {
+                Write-Warning "RanSim 무인 설치 중 오류 발생: $($_.Exception.Message)"
+            }
+        }
+        else {
+            Write-Warning 'RanSim 설치 파일을 찾지 못했습니다. 압축 해제된 폴더를 확인하세요.'
+        }
+    }
+    catch {
+        Write-Warning "RanSim 다운로드 중 오류 발생: $($_.Exception.Message)"
+    }
+    $ranSimExe = 'C:\\KB4\\Newsim\\Ranstart.exe'
+    if (Test-Path -LiteralPath $ranSimExe) {
+        Write-Host 'RanSim 실행 파일을 자동으로 시작합니다.' -ForegroundColor Yellow
+        try {
+            $ranProc = Start-Process -FilePath $ranSimExe -PassThru -ErrorAction Stop
+            try {
+                Wait-Process -Id $ranProc.Id -Timeout 900
+            }
+            catch {
+                Write-Warning 'RanSim이 15분 이내에 종료되지 않았습니다. 실행 상태를 직접 확인하세요.'
             }
         }
         catch {
-            Write-Warning "RanSim 다운로드 중 오류 발생: $($_.Exception.Message)"
+            Write-Warning "RanSim 실행 중 오류 발생: $($_.Exception.Message)"
         }
-    }
-    else {
-        Write-Host 'RanSim 다운로드를 건너뜁니다. 공식 사이트에서 직접 설치하세요.'
     }
     return $null
 }
@@ -1400,20 +1468,14 @@ function Ensure-AtomicRedTeam {
         return $true
     }
 
-    Write-Warning 'Invoke-AtomicRedTeam 모듈이 없습니다. PowerShell 갤러리에서 설치합니다.'
-    $consent = Read-Host 'Invoke-AtomicRedTeam 모듈을 설치하시겠습니까? (y/n)'
-    if ($consent -match '^[Yy]') {
-        try {
-            Install-Module -Name Invoke-AtomicRedTeam -Scope AllUsers -Force
-            Write-Host 'Invoke-AtomicRedTeam 모듈 설치가 완료되었습니다.' -ForegroundColor Green
-            return $true
-        }
-        catch {
-            Write-Warning "Invoke-AtomicRedTeam 설치 실패: $($_.Exception.Message)"
-        }
+    Write-Warning 'Invoke-AtomicRedTeam 모듈이 없습니다. PowerShell 갤러리에서 자동으로 설치를 시도합니다.'
+    try {
+        Install-Module -Name Invoke-AtomicRedTeam -Scope AllUsers -Force -ErrorAction Stop
+        Write-Host 'Invoke-AtomicRedTeam 모듈 설치가 완료되었습니다.' -ForegroundColor Green
+        return $true
     }
-    else {
-        Write-Host '모듈 설치를 건너뜁니다. 추후 수동으로 설치하세요.'
+    catch {
+        Write-Warning "Invoke-AtomicRedTeam 설치 실패: $($_.Exception.Message)"
     }
     return $false
 }
@@ -1431,25 +1493,19 @@ function Ensure-Caldera {
         return $defaultPath
     }
 
-    Write-Warning 'Caldera가 설치되어 있지 않습니다. GitHub 릴리스를 내려받아 설정합니다.'
+    Write-Warning 'Caldera가 설치되어 있지 않습니다. GitHub 릴리스를 자동으로 내려받아 압축을 풉니다.'
     $downloadUrl = 'https://github.com/mitre/caldera/archive/refs/heads/master.zip'
     $localZip    = Join-Path $StagingPath 'caldera-master.zip'
-    $consent = Read-Host 'Caldera 패키지를 다운로드하시겠습니까? (y/n)'
-    if ($consent -match '^[Yy]') {
-        try {
-            Invoke-WebRequest -Uri $downloadUrl -OutFile $localZip -UseBasicParsing
-            Write-Host "Caldera 패키지를 다운로드했습니다: $localZip"
-            $destination = Join-Path $StagingPath 'caldera-master'
-            Expand-Archive -Path $localZip -DestinationPath $destination -Force
-            Write-Host 'Caldera 압축을 해제했습니다. Python 환경 구성이 필요합니다. README를 참고하세요.' -ForegroundColor Yellow
-            return $destination
-        }
-        catch {
-            Write-Warning "Caldera 다운로드 실패: $($_.Exception.Message)"
-        }
+    try {
+        Invoke-WebRequest -Uri $downloadUrl -OutFile $localZip -UseBasicParsing
+        Write-Host "Caldera 패키지를 다운로드했습니다: $localZip"
+        $destination = Join-Path $StagingPath 'caldera-master'
+        Expand-Archive -Path $localZip -DestinationPath $destination -Force
+        Write-Host 'Caldera 압축을 해제했습니다. 가상 환경 및 서버 기동은 README 절차에 따라 진행하세요.' -ForegroundColor Yellow
+        return $destination
     }
-    else {
-        Write-Host 'Caldera 다운로드를 건너뜁니다. 수동으로 설치하세요.'
+    catch {
+        Write-Warning "Caldera 다운로드 실패: $($_.Exception.Message)"
     }
     return $null
 }
@@ -1475,6 +1531,11 @@ function Evaluate-Areas {
         else {
             Write-Host "[$($area.Name)] 변경 사항 없음." -ForegroundColor Green
         }
+
+        Write-Host (
+            "    - 변경 파일: {0}, 신규 파일: {1}, 누락 파일: {2}" -f `
+            $result.ModifiedCount, $result.NewFileCount, $result.MissingCount
+        ) -ForegroundColor DarkCyan
     }
     return $results
 }
@@ -1516,6 +1577,9 @@ $malwareResults = Invoke-MalwareAssessment -AtomicReady $atomicReady -Areas $are
 if ($malwareResults) {
     Write-Host "악성코드 성능 평가 보고서를 생성했습니다: $($malwareResults.SummaryReport)" -ForegroundColor Green
     Write-Host "파일 단위 악성코드 검증 결과: $($malwareResults.FileReport)" -ForegroundColor Green
+    if ($malwareResults.PSObject.Properties.Name -contains 'FinalStateReport') {
+        Write-Host "악성코드 실행 후 최종 파일 상태 요약: $($malwareResults.FinalStateReport)" -ForegroundColor Green
+    }
 }
 
 Write-Host '기본 무결성 스냅샷을 완료했습니다. 시뮬레이터 준비 상태를 확인합니다.' -ForegroundColor Cyan
@@ -1526,20 +1590,9 @@ New-Item -ItemType Directory -Path $staging -Force | Out-Null
 $ransomExe = Ensure-RanSim -StagingPath $staging
 $calderaPath = Ensure-Caldera -StagingPath $staging
 
-Write-Host '각 시뮬레이터를 통해 랜섬웨어 및 추가 침해 시나리오를 실행한 뒤 Enter 키를 눌러 계속하세요.' -ForegroundColor Yellow
-Write-Host 'RanSim 시나리오 실행 완료 후 Enter: ' -NoNewline
-[void][System.Console]::ReadLine()
-
-if ($atomicReady) {
-    Write-Host 'Atomic Red Team 추가 시나리오 실행 완료 후 Enter: ' -NoNewline
-    [void][System.Console]::ReadLine()
+if (-not $atomicReady) {
+    Write-Host 'Atomic Red Team 모듈이 준비되지 않아 내부 시뮬레이션만 실행됩니다.' -ForegroundColor Yellow
 }
-else {
-    Write-Host 'Atomic Red Team 모듈이 없으므로 해당 테스트는 생략되었습니다.' -ForegroundColor Yellow
-}
-
-Write-Host 'Caldera 기반 테스트 실행 완료 후 Enter: ' -NoNewline
-[void][System.Console]::ReadLine()
 
 # 7단계: 시뮬레이터 실행 이후 변경된 내용을 분석하여 결과를 정리합니다.
 $evaluation = Evaluate-Areas -Areas $areas -Baselines $baselines

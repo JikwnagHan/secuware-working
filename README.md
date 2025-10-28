@@ -21,9 +21,9 @@
    ```
 3. 안내에 따라 일반영역, 보안영역, 보고서 경로를 입력합니다. 폴더가 존재하지 않으면 자동으로 생성합니다.
 4. 스크립트가 샘플 데이터를 배포한 뒤 자동으로 데이터 보호 성능을 측정하고 `DataProtection_Baseline_*.csv` 파일을 생성합니다.
-5. Atomic Red Team 모듈이 감지되면 스크립트가 자동으로 50개 악성 행위 시나리오를 실행합니다. 결과는 `Malware_Performance_Assessment_*.csv`, `Malware_Assessment_Summary_*.csv`, `Malware_Assessment_FileStatus_*.csv`, `Malware_Assessment_Log_*.txt`로 저장됩니다.
-6. RanSim / Caldera 설치 여부 확인 단계에서 자동 다운로드를 원하면 `y`를 입력합니다. 수동 설치도 가능합니다.
-7. 각 시뮬레이터의 테스트를 모두 끝냈다면 Enter 키를 눌러 최종 파일 무결성 평가를 진행합니다.
+5. Atomic Red Team 모듈이 감지되면 스크립트가 자동으로 50개 악성 행위 시나리오를 실행합니다. 결과는 `Malware_Performance_Assessment_*.csv`, `Malware_Assessment_Summary_*.csv`, `Malware_Assessment_FileStatus_*.csv`, `Malware_Assessment_Log_*.txt`로 저장되며, `Malware_Assessment_FileStatus_*.csv`에는 테스트마다 각 파일의 존재 여부·크기·SHA256 해시(전/후)가 기록됩니다.
+6. RanSim / Caldera / Invoke-AtomicRedTeam이 설치되어 있지 않으면 스크립트가 자동으로 다운로드와 무인 설치/압축 해제를 시도하고, RanSim 실행 파일이 준비되면 자동으로 기동합니다.
+7. 추가 입력 없이 시뮬레이터 준비부터 악성 행위 평가, 최종 랜섬웨어 무결성 검증까지 모두 연속 실행됩니다.
 8. 결과는 지정한 보고서 경로에 CSV/JSON으로 저장되며 문서 샘플 계획, 악성 행위 로그, 파일 단위 검증 결과까지 확인할 수 있습니다.
 
 > ⚠️ **주의:** 실제 운영 환경이 아닌, 승인된 테스트 환경에서만 시뮬레이션을 수행하세요. 시뮬레이터 설치 및 실행 시 각 제품의 라이선스 정책과 보안 지침을 준수해야 합니다.
@@ -33,7 +33,8 @@
 - `DataProtection_Baseline_YYYYMMDD_HHMMSS.csv`: 랜섬웨어 실행 전 각 영역의 문서/시스템 파일 현황
 - `Malware_Performance_Assessment_YYYYMMDD_HHMMSS.csv`: Atomic Red Team 50개 시나리오 실행 결과(성공/실패, 영향 파일, Atomic 실행 여부)
 - `Malware_Assessment_Summary_YYYYMMDD_HHMMSS.csv`: 영역별 핵심 지표(무결성 보존률, 쓰기/압축/유출 차단율 등)
-- `Malware_Assessment_FileStatus_YYYYMMDD_HHMMSS.csv`: 악성 행위 이후 각 파일의 상태(Intact/Changed/Missing/New)와 해시 비교 결과
+- `Malware_Assessment_FileStatus_YYYYMMDD_HHMMSS.csv`: 악성 행위 시나리오별로 각 파일의 실행 전/후 존재 여부, 크기, SHA256 해시, 변경 여부를 기록한 세부 데이터
+- `Malware_Assessment_FinalState_YYYYMMDD_HHMMSS.csv`: 악성 행위 이후 영역별 파일 상태(Intact/Changed/Missing/New)와 해시 비교 결과
 - `Malware_Assessment_Log_YYYYMMDD_HHMMSS.txt`: 시나리오별 세부 로그
 - `Ransomware_Evaluation_YYYYMMDD_HHMMSS.csv`: 각 영역의 Intact/변경/누락/신규 파일 수 및 침해 여부 요약
 - `Ransomware_FileStatus_YYYYMMDD_HHMMSS.csv`: 모든 파일에 대한 상태(Intact/Changed/Missing/New)와 해시 비교 결과
