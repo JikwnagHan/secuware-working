@@ -1,10 +1,11 @@
 # Ransomware Validation Automation Script
 
-이 저장소는 보안영역과 일반영역 폴더에 이미 준비된 업무 데이터를 활용하여 RanSim / Atomic Red Team / Caldera 시뮬레이터 준비 상태를 점검하고, 파일 무결성 비교를 통해 랜섬웨어 및 악성코드 침해 여부를 측정하는 PowerShell 스크립트를 제공합니다.
+이 저장소는 보안영역과 일반영역 폴더에 이미 준비된 업무 데이터를 활용하거나, 테스트용 데이터를 새로 구성하여 RanSim / Atomic Red Team / Caldera 시뮬레이터 준비 상태를 점검하고, 파일 무결성 비교를 통해 랜섬웨어 및 악성코드 침해 여부를 측정하는 PowerShell 스크립트를 제공합니다.
 
 ## 주요 기능
 - 일반영역 및 보안영역 경로, 보고서 저장 경로를 인터랙티브하게 입력받습니다.
-- 각 영역에 이미 배치된 문서/시스템 데이터를 그대로 사용하며, 확장자·용량·해시를 스캔하여 기준 정보를 확보합니다. 필요한 파일이 누락된 경우 경고만 출력하고 기존 자산을 변경하지 않습니다.
+- 필요 시 `prepare_test_data.ps1` 스크립트를 사용하여 일반영역·보안영역 내부를 초기화하고, 평가에 필요한 문서·시스템 파일(.doc, .ppt, .xls, .hwp, .txt, .png, .jpg, .zip, .dll, .dat 등)을 자동 생성할 수 있습니다.
+- 랜섬웨어 검증 스크립트(`ransomware_validation.ps1`)는 각 영역에 이미 배치된 문서/시스템 데이터를 그대로 사용하며, 확장자·용량·해시를 스캔하여 기준 정보를 확보합니다. 필요한 파일이 누락된 경우 경고만 출력하고 기존 자산을 변경하지 않습니다.
 - 생성 직후 데이터 보호 성능(문서/시스템 파일 수, 총 용량 등)을 측정해 기준선을 CSV로 남깁니다.
 - RanSim, Invoke-AtomicRedTeam 모듈, Caldera 설치 여부를 확인하고 필요 시 다운로드/설치를 돕습니다.
 - Invoke-AtomicRedTeam 모듈이 있지만 Atomics 콘텐츠가 누락된 경우 모듈 설치 경로나 `C:\AtomicRedTeam`을 자동으로 탐색하고, 필요 시 GitHub에서 Atomics 패키지를 내려받아 배치합니다.
@@ -14,17 +15,21 @@
 
 ## 사용 방법
 1. PowerShell을 **관리자 권한으로 실행**합니다.
-2. 스크립트를 복사하여 붙여넣거나 `ransomware_validation.ps1` 파일을 실행합니다.
+2. (선택) 테스트를 위한 전용 데이터를 새로 준비하려면 `prepare_test_data.ps1`을 먼저 실행합니다.
+   - 스크립트 실행 시 일반영역/보안영역 경로, 생성 계획 CSV 저장 경로를 차례대로 입력합니다.
+   - 각 영역의 기존 폴더·파일은 모두 삭제되므로, 운영 데이터가 아닌 테스트 전용 경로를 사용해야 합니다.
+   - 완료 후 `Docs`, `SysCfg` 폴더 안에 문서 9종과 시스템 모사 파일이 새로 생성되고, 생성 이력 CSV가 지정한 경로에 저장됩니다.
+3. 랜섬웨어 검증 스크립트를 복사하여 붙여넣거나 `ransomware_validation.ps1` 파일을 실행합니다.
    ```powershell
    Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
    .\ransomware_validation.ps1
    ```
-3. 안내에 따라 일반영역, 보안영역, 보고서 경로를 입력합니다. 폴더가 존재하지 않으면 자동으로 생성합니다.
-4. 스크립트가 기존 데이터를 스캔한 뒤 자동으로 데이터 보호 성능을 측정하고 `DataProtection_Baseline_*.csv` 파일을 생성합니다.
-5. Atomic Red Team 모듈이 감지되면 스크립트가 자동으로 50개 악성 행위 시나리오를 실행합니다. 결과는 `Malware_Performance_Assessment_*.csv`, `Malware_Assessment_Summary_*.csv`, `Malware_Assessment_FileStatus_*.csv`, `Malware_Assessment_Log_*.txt`로 저장되며, `Malware_Assessment_FileStatus_*.csv`에는 테스트마다 각 파일의 존재 여부·크기·SHA256 해시(전/후)가 기록됩니다.
-6. RanSim / Caldera / Invoke-AtomicRedTeam이 설치되어 있지 않으면 스크립트가 자동으로 다운로드와 무인 설치/압축 해제를 시도하고, 손상된 압축 파일이 감지되면 삭제 후 한 번 더 재다운로드합니다. RanSim 실행 파일이 준비되면 자동으로 기동하며, 자동 다운로드가 끝내 실패하면 설치 파일이 있는 폴더 또는 파일 경로를 입력해 수동 패키지를 사용할 수 있습니다.
-7. 추가 입력 없이 시뮬레이터 준비부터 악성 행위 평가, 최종 랜섬웨어 무결성 검증까지 모두 연속 실행됩니다.
-8. 결과는 지정한 보고서 경로에 CSV/JSON으로 저장되며 악성 행위 로그와 파일 단위 검증 결과까지 확인할 수 있습니다.
+4. 안내에 따라 일반영역, 보안영역, 보고서 경로를 입력합니다. 폴더가 존재하지 않으면 자동으로 생성합니다.
+5. 스크립트가 기존 데이터를 스캔한 뒤 자동으로 데이터 보호 성능을 측정하고 `DataProtection_Baseline_*.csv` 파일을 생성합니다.
+6. Atomic Red Team 모듈이 감지되면 스크립트가 자동으로 50개 악성 행위 시나리오를 실행합니다. 결과는 `Malware_Performance_Assessment_*.csv`, `Malware_Assessment_Summary_*.csv`, `Malware_Assessment_FileStatus_*.csv`, `Malware_Assessment_Log_*.txt`로 저장되며, `Malware_Assessment_FileStatus_*.csv`에는 테스트마다 각 파일의 존재 여부·크기·SHA256 해시(전/후)가 기록됩니다.
+7. RanSim / Caldera / Invoke-AtomicRedTeam이 설치되어 있지 않으면 스크립트가 자동으로 다운로드와 무인 설치/압축 해제를 시도하고, 손상된 압축 파일이 감지되면 삭제 후 한 번 더 재다운로드합니다. RanSim 실행 파일이 준비되면 자동으로 기동하며, 자동 다운로드가 끝내 실패하면 설치 파일이 있는 폴더 또는 파일 경로를 입력해 수동 패키지를 사용할 수 있습니다.
+8. 추가 입력 없이 시뮬레이터 준비부터 악성 행위 평가, 최종 랜섬웨어 무결성 검증까지 모두 연속 실행됩니다.
+9. 결과는 지정한 보고서 경로에 CSV/JSON으로 저장되며 악성 행위 로그와 파일 단위 검증 결과까지 확인할 수 있습니다.
 
 > ⚠️ **주의:** 실제 운영 환경이 아닌, 승인된 테스트 환경에서만 시뮬레이션을 수행하세요. 시뮬레이터 설치 및 실행 시 각 제품의 라이선스 정책과 보안 지침을 준수해야 합니다.
 
