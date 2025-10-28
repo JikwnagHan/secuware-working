@@ -16,6 +16,56 @@
 [CmdletBinding()]
 param()
 
+function Set-DownloadSecurityProtocol {
+    [CmdletBinding()]
+    param()
+
+    if (-not $script:DownloadSecurityProtocolInitialized) {
+        try {
+            $existing = [System.Net.ServicePointManager]::SecurityProtocol
+            $desired  = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls11 -bor [System.Net.SecurityProtocolType]::Tls
+            [System.Net.ServicePointManager]::SecurityProtocol = $existing -bor $desired
+        }
+        catch {
+            Write-Warning "TLS 통신 설정 중 오류가 발생했습니다: $($_.Exception.Message)"
+        }
+        $script:DownloadSecurityProtocolInitialized = $true
+    }
+}
+
+function Invoke-SafeDownload {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Uri,
+        [Parameter(Mandatory)][string]$OutFile,
+        [Parameter()][switch]$SkipIfExists
+    )
+
+    if ($SkipIfExists -and (Test-Path -LiteralPath $OutFile)) {
+        Write-Host "이미 다운로드된 파일을 재사용합니다: $OutFile" -ForegroundColor Yellow
+        return @{ Success = $true; Path = (Resolve-Path -Path $OutFile).ProviderPath }
+    }
+
+    Set-DownloadSecurityProtocol
+
+    try {
+        Invoke-WebRequest -Uri $Uri -OutFile $OutFile -UseBasicParsing -ErrorAction Stop
+        return @{ Success = $true; Path = (Resolve-Path -Path $OutFile).ProviderPath }
+    }
+    catch {
+        Write-Warning "원격 파일 다운로드에 실패했습니다: $($_.Exception.Message)"
+        $errorMessage = $_.Exception.Message
+        if ($errorMessage -match 'trust relationship' -or ($_.Exception.InnerException -and $_.Exception.InnerException.Message -match 'trust relationship')) {
+            Write-Warning '해결 방법: 사내 프록시/보안 장비가 SSL/TLS를 검사하는 경우 해당 장비의 루트 인증서를 Windows "신뢰할 수 있는 루트 인증 기관" 저장소에 추가해야 합니다.'
+            Write-Warning '대안: 인터넷 연결이 제한된 환경에서는 공인 네트워크에서 패키지를 미리 내려받아 스크립트의 임시 폴더(예: C:\Temp\SecurityTools)에 수동 배치한 뒤 다시 실행하세요.'
+        }
+        else {
+            Write-Warning '대안: 공식 웹사이트에서 패키지를 수동으로 내려받은 후 스크립트에서 사용하는 임시 폴더로 복사해 주세요.'
+        }
+        return @{ Success = $false; Error = $_.Exception }
+    }
+}
+
 function Read-ValidatedPath {
     [CmdletBinding()]
     param(
@@ -1482,8 +1532,8 @@ function Ensure-RanSim {
     # 최신 RanSim 패키지 다운로드 주소입니다. 필요 시 보안망에서 미리 다운로드해 두세요.
     $downloadUrl = 'https://assets.knowbe4.com/download/ransim/KnowBe4RanSim.zip'
     $localZip    = Join-Path $StagingPath 'KnowBe4RanSim.zip'
-    try {
-        Invoke-WebRequest -Uri $downloadUrl -OutFile $localZip -UseBasicParsing
+    $downloadResult = Invoke-SafeDownload -Uri $downloadUrl -OutFile $localZip -SkipIfExists
+    if ($downloadResult.Success) {
         Write-Host "RanSim 설치 패키지를 다운로드했습니다: $localZip"
         Expand-Archive -Path $localZip -DestinationPath $StagingPath -Force
         $installer = Get-ChildItem -Path $StagingPath -Filter 'RanSim*.msi' -Recurse | Select-Object -First 1
@@ -1502,8 +1552,8 @@ function Ensure-RanSim {
             Write-Warning 'RanSim 설치 파일을 찾지 못했습니다. 압축 해제된 폴더를 확인하세요.'
         }
     }
-    catch {
-        Write-Warning "RanSim 다운로드 중 오류 발생: $($_.Exception.Message)"
+    else {
+        Write-Warning 'RanSim 패키지를 자동으로 내려받지 못했습니다. 제공된 안내에 따라 수동으로 패키지를 준비한 후 스크립트를 다시 실행해 주세요.'
     }
     $ranSimExe = 'C:\\KB4\\Newsim\\Ranstart.exe'
     if (Test-Path -LiteralPath $ranSimExe) {
@@ -1593,7 +1643,10 @@ function Ensure-AtomicRedTeam {
             }
 
             $zipPath = Join-Path $downloadRoot 'atomic-red-team.zip'
-            Invoke-WebRequest -Uri $repoUrl -OutFile $zipPath -UseBasicParsing
+            $downloadResult = Invoke-SafeDownload -Uri $repoUrl -OutFile $zipPath -SkipIfExists
+            if (-not $downloadResult.Success) {
+                throw $downloadResult.Error
+            }
             Expand-Archive -Path $zipPath -DestinationPath $downloadRoot -Force
             Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
 
@@ -1609,6 +1662,7 @@ function Ensure-AtomicRedTeam {
         }
         catch {
             Write-Warning "Atomics 패키지 다운로드 실패: $($_.Exception.Message)"
+            Write-Warning '수동 조치: https://github.com/redcanaryco/atomic-red-team 저장소를 신뢰할 수 있는 네트워크에서 내려받아 C:\\AtomicRedTeam 경로에 압축 해제한 뒤 스크립트를 재실행하세요.'
         }
     }
 
@@ -1638,16 +1692,16 @@ function Ensure-Caldera {
     Write-Warning 'Caldera가 설치되어 있지 않습니다. GitHub 릴리스를 자동으로 내려받아 압축을 풉니다.'
     $downloadUrl = 'https://github.com/mitre/caldera/archive/refs/heads/master.zip'
     $localZip    = Join-Path $StagingPath 'caldera-master.zip'
-    try {
-        Invoke-WebRequest -Uri $downloadUrl -OutFile $localZip -UseBasicParsing
+    $downloadResult = Invoke-SafeDownload -Uri $downloadUrl -OutFile $localZip -SkipIfExists
+    if ($downloadResult.Success) {
         Write-Host "Caldera 패키지를 다운로드했습니다: $localZip"
         $destination = Join-Path $StagingPath 'caldera-master'
         Expand-Archive -Path $localZip -DestinationPath $destination -Force
         Write-Host 'Caldera 압축을 해제했습니다. 가상 환경 및 서버 기동은 README 절차에 따라 진행하세요.' -ForegroundColor Yellow
         return $destination
     }
-    catch {
-        Write-Warning "Caldera 다운로드 실패: $($_.Exception.Message)"
+    else {
+        Write-Warning 'Caldera 패키지를 자동으로 확보하지 못했습니다. 공식 저장소에서 수동으로 내려받아 임시 폴더에 배치한 뒤 재실행해 주세요.'
     }
     return $null
 }
