@@ -976,18 +976,64 @@ function Invoke-MalwareOperation {
 
 function Resolve-AtomicsFolder {
     [CmdletBinding()]
-    param()
-
-    $candidates = @(
-        'C:\\AtomicRedTeam\\atomic-red-team-master\\atomics',
-        'C:\\AtomicRedTeam\\atomics',
-        (Join-Path $env:ProgramData 'AtomicRedTeam\\atomics'),
-        (Join-Path $env:ProgramFiles 'AtomicRedTeam\\atomics')
+    param(
+        [Parameter()][string[]]$PreferredPaths
     )
 
-    foreach ($path in $candidates) {
-        if ($path -and (Test-Path -LiteralPath $path)) {
-            return $path
+    # 가능한 후보 경로를 우선순위대로 모아서 순차적으로 검사합니다.
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    $queue = New-Object 'System.Collections.Generic.List[string]'
+
+    $addCandidate = {
+        param($value)
+        if ([string]::IsNullOrWhiteSpace($value)) { return }
+        try {
+            $normalized = [System.IO.Path]::GetFullPath($value)
+        }
+        catch {
+            return
+        }
+        if ($seen.Add($normalized)) {
+            [void]$queue.Add($normalized)
+        }
+    }
+
+    foreach ($path in $PreferredPaths) { & $addCandidate.Invoke($path) }
+
+    if ($env:ATOMIC_RED_TEAM_PATH) {
+        & $addCandidate.Invoke($env:ATOMIC_RED_TEAM_PATH)
+    }
+
+    $defaultRoots = @('C:\\AtomicRedTeam', 'D:\\AtomicRedTeam')
+    foreach ($root in $defaultRoots) {
+        & $addCandidate.Invoke((Join-Path $root 'atomic-red-team-master\\atomics'))
+        & $addCandidate.Invoke((Join-Path $root 'atomic-red-team\\atomics'))
+        & $addCandidate.Invoke((Join-Path $root 'atomics'))
+    }
+
+    & $addCandidate.Invoke('C:\\AtomicRedTeam\\atomic-red-team-master\\atomics')
+    & $addCandidate.Invoke('C:\\AtomicRedTeam\\atomics')
+    & $addCandidate.Invoke((Join-Path $env:ProgramData 'AtomicRedTeam\\atomics'))
+    & $addCandidate.Invoke((Join-Path $env:ProgramFiles 'AtomicRedTeam\\atomics'))
+
+    $modules = Get-Module -ListAvailable -Name Invoke-AtomicRedTeam
+    foreach ($module in $modules) {
+        $moduleBase = $module.ModuleBase
+        if (-not [string]::IsNullOrWhiteSpace($moduleBase)) {
+            & $addCandidate.Invoke((Join-Path $moduleBase 'atomics'))
+            & $addCandidate.Invoke((Join-Path $moduleBase 'atomic-red-team-master\\atomics'))
+            $parent = Split-Path -Path $moduleBase -Parent
+            if ($parent) {
+                & $addCandidate.Invoke((Join-Path $parent 'atomics'))
+                & $addCandidate.Invoke((Join-Path $parent 'atomic-red-team\\atomics'))
+                & $addCandidate.Invoke((Join-Path $parent 'atomic-red-team-master\\atomics'))
+            }
+        }
+    }
+
+    foreach ($candidate in $queue) {
+        if (Test-Path -LiteralPath $candidate) {
+            return $candidate
         }
     }
 
@@ -997,7 +1043,7 @@ function Resolve-AtomicsFolder {
 function Invoke-MalwareAssessment {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][bool]$AtomicReady,
+        [Parameter(Mandatory)]$AtomicContext,
         [Parameter(Mandatory)]$Areas,
         [Parameter(Mandatory)][string]$ReportPath,
         [Parameter(Mandatory)]$Baselines
@@ -1009,13 +1055,34 @@ function Invoke-MalwareAssessment {
     $fileCsv      = Join-Path $ReportPath ("Malware_Assessment_FileStatus_{0}.csv" -f $timestamp)
     $finalCsv     = Join-Path $ReportPath ("Malware_Assessment_FinalState_{0}.csv" -f $timestamp)
     $logPath      = Join-Path $ReportPath ("Malware_Assessment_Log_{0}.txt" -f $timestamp)
-    "[Start] $(Get-Date -Format o) 악성코드 성능 검증을 시작합니다. Atomic 모듈 상태: $AtomicReady" | Out-File -FilePath $logPath -Encoding UTF8
 
     $plan = Get-MalwareOperationPlan
-    $moduleStatus = if ($AtomicReady) { 'Invoke-AtomicRedTeam available' } else { 'Module missing - local plan executed' }
-    $atomicsPath = if ($AtomicReady) { Resolve-AtomicsFolder } else { $null }
-    if ($AtomicReady -and -not $atomicsPath) {
-        "Invoke-AtomicRedTeam 모듈은 있으나 atomics 폴더를 찾지 못했습니다." | Out-File -FilePath $logPath -Append -Encoding UTF8
+    $atomicReady = $false
+    $atomicsPath = $null
+    if ($null -ne $AtomicContext) {
+        if ($AtomicContext.PSObject.Properties.Match('Ready').Count -gt 0) {
+            $atomicReady = [bool]$AtomicContext.Ready
+        }
+        elseif ($AtomicContext -is [bool]) {
+            $atomicReady = [bool]$AtomicContext
+        }
+
+        if ($AtomicContext.PSObject.Properties.Match('AtomicsPath').Count -gt 0) {
+            $atomicsPath = $AtomicContext.AtomicsPath
+        }
+    }
+
+    if ($atomicReady -and -not $atomicsPath) {
+        $atomicsPath = Resolve-AtomicsFolder
+    }
+
+    $moduleStatus = if ($atomicReady) { 'Invoke-AtomicRedTeam available' } else { 'Module missing - local plan executed' }
+    "[Start] $(Get-Date -Format o) 악성코드 성능 검증을 시작합니다. Atomic 모듈 상태: $moduleStatus" | Out-File -FilePath $logPath -Encoding UTF8
+    if ($atomicReady -and $atomicsPath) {
+        "Invoke-AtomicRedTeam atomics 폴더 확인: $atomicsPath" | Out-File -FilePath $logPath -Append -Encoding UTF8
+    }
+    elseif ($atomicReady -and -not $atomicsPath) {
+        "Invoke-AtomicRedTeam 모듈은 있으나 atomics 폴더를 찾지 못했습니다. GitHub에서 atomic-red-team 저장소를 내려받아 ATOMIC_RED_TEAM_PATH 환경 변수 또는 C:\\AtomicRedTeam 경로에 배치하세요." | Out-File -FilePath $logPath -Append -Encoding UTF8
     }
 
     $operationEntries = New-Object System.Collections.Generic.List[object]
@@ -1036,7 +1103,7 @@ function Invoke-MalwareAssessment {
 
         foreach ($operation in $plan) {
             $atomicOutcome = 'Skipped'
-            if ($AtomicReady -and $atomicsPath -and $operation.PSObject.Properties.Match('AtomicTestId').Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($operation.AtomicTestId)) {
+            if ($atomicReady -and $atomicsPath -and $operation.PSObject.Properties.Match('AtomicTestId').Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($operation.AtomicTestId)) {
                 try {
                     $parts = $operation.AtomicTestId -split '-'
                     $technique = $parts[0]
@@ -1461,23 +1528,98 @@ function Ensure-AtomicRedTeam {
     [CmdletBinding()]
     param()
 
-    # PowerShell 모듈 Invoke-AtomicRedTeam 설치 여부 확인 후 필요 시 설치합니다.
-    $module = Get-Module -ListAvailable -Name Invoke-AtomicRedTeam
-    if ($module) {
-        Write-Host 'Invoke-AtomicRedTeam 모듈이 확인되었습니다.' -ForegroundColor Green
-        return $true
+    $result = [pscustomobject]@{
+        Ready       = $false
+        AtomicsPath = $null
+        ModuleBase  = $null
     }
 
-    Write-Warning 'Invoke-AtomicRedTeam 모듈이 없습니다. PowerShell 갤러리에서 자동으로 설치를 시도합니다.'
-    try {
-        Install-Module -Name Invoke-AtomicRedTeam -Scope AllUsers -Force -ErrorAction Stop
-        Write-Host 'Invoke-AtomicRedTeam 모듈 설치가 완료되었습니다.' -ForegroundColor Green
-        return $true
+    # PowerShell 모듈 Invoke-AtomicRedTeam 설치 여부 확인 후 필요 시 설치합니다.
+    $modules = Get-Module -ListAvailable -Name Invoke-AtomicRedTeam
+    if (-not $modules) {
+        Write-Warning 'Invoke-AtomicRedTeam 모듈이 없습니다. PowerShell 갤러리에서 자동 설치를 시도합니다.'
+        try {
+            Install-Module -Name Invoke-AtomicRedTeam -Scope AllUsers -Force -ErrorAction Stop
+            Write-Host 'Invoke-AtomicRedTeam 모듈 설치가 완료되었습니다.' -ForegroundColor Green
+            $modules = Get-Module -ListAvailable -Name Invoke-AtomicRedTeam
+        }
+        catch {
+            Write-Warning "Invoke-AtomicRedTeam 설치 실패: $($_.Exception.Message)"
+            return $result
+        }
     }
-    catch {
-        Write-Warning "Invoke-AtomicRedTeam 설치 실패: $($_.Exception.Message)"
+
+    if (-not $modules) {
+        return $result
     }
-    return $false
+
+    $primary = $modules | Select-Object -First 1
+    $result.Ready = $true
+    if ($primary.ModuleBase) {
+        $result.ModuleBase = $primary.ModuleBase
+        Write-Host "Invoke-AtomicRedTeam 모듈이 확인되었습니다. (경로: $($primary.ModuleBase))" -ForegroundColor Green
+    }
+    else {
+        Write-Host 'Invoke-AtomicRedTeam 모듈이 확인되었습니다.' -ForegroundColor Green
+    }
+
+    $preferred = @()
+    if ($primary.ModuleBase) {
+        $preferred += (Join-Path $primary.ModuleBase 'atomics')
+        $preferred += (Join-Path $primary.ModuleBase 'atomic-red-team-master\\atomics')
+    }
+
+    $atomicsPath = Resolve-AtomicsFolder -PreferredPaths $preferred
+    if (-not $atomicsPath) {
+        # 기본 설치 경로(C:\AtomicRedTeam)에 atomics 폴더가 있는지 다시 확인합니다.
+        $defaultRoot = 'C:\\AtomicRedTeam'
+        $existing = Resolve-AtomicsFolder -PreferredPaths @(
+            (Join-Path $defaultRoot 'atomic-red-team-master\\atomics'),
+            (Join-Path $defaultRoot 'atomics')
+        )
+
+        if ($existing) {
+            $atomicsPath = $existing
+        }
+    }
+
+    if (-not $atomicsPath) {
+        Write-Warning 'Invoke-AtomicRedTeam 모듈은 있으나 atomics 폴더가 보이지 않습니다. GitHub 저장소를 자동으로 내려받습니다.'
+        $downloadRoot = 'C:\\AtomicRedTeam'
+        $repoUrl = 'https://github.com/redcanaryco/atomic-red-team/archive/refs/heads/master.zip'
+        try {
+            if (-not (Test-Path -LiteralPath $downloadRoot)) {
+                New-Item -ItemType Directory -Path $downloadRoot -Force | Out-Null
+            }
+
+            $zipPath = Join-Path $downloadRoot 'atomic-red-team.zip'
+            Invoke-WebRequest -Uri $repoUrl -OutFile $zipPath -UseBasicParsing
+            Expand-Archive -Path $zipPath -DestinationPath $downloadRoot -Force
+            Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
+
+            $expanded = Join-Path $downloadRoot 'atomic-red-team-master'
+            $atomicsPath = Resolve-AtomicsFolder -PreferredPaths @(
+                (Join-Path $expanded 'atomics'),
+                (Join-Path $downloadRoot 'atomics')
+            )
+
+            if ($atomicsPath) {
+                Write-Host "Atomic Red Team Atomics 데이터를 다운로드하여 배치했습니다: $atomicsPath" -ForegroundColor Green
+            }
+        }
+        catch {
+            Write-Warning "Atomics 패키지 다운로드 실패: $($_.Exception.Message)"
+        }
+    }
+
+    if ($atomicsPath) {
+        $result.AtomicsPath = $atomicsPath
+    }
+    else {
+        Write-Warning 'atomics 폴더 확보에 실패했습니다. 필요 시 https://github.com/redcanaryco/atomic-red-team 저장소를 직접 내려받아 ATOMIC_RED_TEAM_PATH 환경 변수를 설정하세요.'
+    }
+
+    return $result
 }
 
 function Ensure-Caldera {
@@ -1572,8 +1714,8 @@ foreach ($area in $areas) {
 }
 
 # 5단계: Atomic Red Team 모듈을 점검하고 악성코드 성능 검증을 수행합니다.
-$atomicReady = Ensure-AtomicRedTeam
-$malwareResults = Invoke-MalwareAssessment -AtomicReady $atomicReady -Areas $areas -ReportPath $reportPath -Baselines $baselines
+$atomicInfo = Ensure-AtomicRedTeam
+$malwareResults = Invoke-MalwareAssessment -AtomicContext $atomicInfo -Areas $areas -ReportPath $reportPath -Baselines $baselines
 if ($malwareResults) {
     Write-Host "악성코드 성능 평가 보고서를 생성했습니다: $($malwareResults.SummaryReport)" -ForegroundColor Green
     Write-Host "파일 단위 악성코드 검증 결과: $($malwareResults.FileReport)" -ForegroundColor Green
@@ -1590,8 +1732,11 @@ New-Item -ItemType Directory -Path $staging -Force | Out-Null
 $ransomExe = Ensure-RanSim -StagingPath $staging
 $calderaPath = Ensure-Caldera -StagingPath $staging
 
-if (-not $atomicReady) {
+if (-not $atomicInfo.Ready) {
     Write-Host 'Atomic Red Team 모듈이 준비되지 않아 내부 시뮬레이션만 실행됩니다.' -ForegroundColor Yellow
+}
+elseif ($atomicInfo.AtomicsPath) {
+    Write-Host "Atomic Red Team atomics 폴더: $($atomicInfo.AtomicsPath)" -ForegroundColor DarkGreen
 }
 
 # 7단계: 시뮬레이터 실행 이후 변경된 내용을 분석하여 결과를 정리합니다.
