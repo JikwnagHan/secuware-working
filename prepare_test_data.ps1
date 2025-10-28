@@ -2,7 +2,7 @@
     파일 생성 자동화 스크립트
     - 일반영역/보안영역 경로를 입력받아 기존 내용을 모두 정리합니다.
     - 평가용 폴더(Docs, SysCfg)를 만들고 요구된 샘플 파일을 새로 생성합니다.
-    - 생성 계획은 CSV로 저장하여 나중에 재현할 수 있습니다.
+    - 난수 시드를 활용해 문서 크기를 무작위로 선택하며, 사용된 시드는 화면에 안내합니다.
 #>
 
 [CmdletBinding()]
@@ -98,8 +98,7 @@ function Initialize-Area {
     param(
         [string] $AreaName,
         [string] $RootPath,
-        [System.Random] $Random,
-        [System.Collections.Generic.List[object]] $Plan
+        [System.Random] $Random
     )
 
     Write-Host "[$AreaName] 폴더를 준비합니다: $RootPath"
@@ -119,13 +118,6 @@ function Initialize-Area {
         $fileName = "sample_{0}_{1}.{0}" -f $ext, $size
         $filePath = Join-Path $docsPath $fileName
         Write-RandomFile -Path $filePath -SizeBytes $size -Random $Random
-        $Plan.Add([pscustomobject]@{
-            Area       = $AreaName
-            Category   = 'Document'
-            Extension  = $ext
-            SizeBytes  = $size
-            FilePath   = $filePath
-        })
     }
 
     Write-TextFile -Path (Join-Path $sysPath 'hosts_sample.txt') -Content "127.0.0.1 localhost`n# 테스트용 호스트 파일"
@@ -146,41 +138,19 @@ function Initialize-Area {
     $zipPath = Join-Path $sysPath 'sample.zip'
     New-ZipSample -DestinationPath $zipPath -SourceContent @{ 'readme.txt' = "이 ZIP 파일은 테스트 자동화에서 생성되었습니다." }
 
-    $Plan.Add([pscustomobject]@{ Area=$AreaName; Category='System'; Extension='hosts';  SizeBytes=(Get-Item (Join-Path $sysPath 'hosts_sample.txt')).Length; FilePath=(Join-Path $sysPath 'hosts_sample.txt') })
-    $Plan.Add([pscustomobject]@{ Area=$AreaName; Category='System'; Extension='env';    SizeBytes=(Get-Item (Join-Path $sysPath 'system.env')).Length;           FilePath=(Join-Path $sysPath 'system.env') })
-    $Plan.Add([pscustomobject]@{ Area=$AreaName; Category='System'; Extension='json';   SizeBytes=(Get-Item (Join-Path $sysPath 'appsettings.json')).Length;     FilePath=(Join-Path $sysPath 'appsettings.json') })
-    $Plan.Add([pscustomobject]@{ Area=$AreaName; Category='System'; Extension='ini';    SizeBytes=(Get-Item (Join-Path $sysPath 'config.ini')).Length;           FilePath=(Join-Path $sysPath 'config.ini') })
-    $Plan.Add([pscustomobject]@{ Area=$AreaName; Category='System'; Extension='reg';    SizeBytes=(Get-Item (Join-Path $sysPath 'registry_backup.reg')).Length; FilePath=(Join-Path $sysPath 'registry_backup.reg') })
-    $Plan.Add([pscustomobject]@{ Area=$AreaName; Category='System'; Extension='csv';    SizeBytes=(Get-Item (Join-Path $sysPath 'sample.csv')).Length;           FilePath=(Join-Path $sysPath 'sample.csv') })
-    $Plan.Add([pscustomobject]@{ Area=$AreaName; Category='System'; Extension='config'; SizeBytes=(Get-Item (Join-Path $sysPath 'settings.config')).Length;    FilePath=(Join-Path $sysPath 'settings.config') })
-    $Plan.Add([pscustomobject]@{ Area=$AreaName; Category='System'; Extension='dat';    SizeBytes=(Get-Item (Join-Path $sysPath 'system_like_UsrClass.dat')).Length; FilePath=(Join-Path $sysPath 'system_like_UsrClass.dat') })
-    $Plan.Add([pscustomobject]@{ Area=$AreaName; Category='System'; Extension='dll';    SizeBytes=(Get-Item (Join-Path $sysPath 'sample.dll')).Length;           FilePath=(Join-Path $sysPath 'sample.dll') })
-    $Plan.Add([pscustomobject]@{ Area=$AreaName; Category='System'; Extension='png';    SizeBytes=(Get-Item (Join-Path $sysPath 'image_1x1.png')).Length;       FilePath=(Join-Path $sysPath 'image_1x1.png') })
-    $Plan.Add([pscustomobject]@{ Area=$AreaName; Category='System'; Extension='jpg';    SizeBytes=(Get-Item (Join-Path $sysPath 'image_1x1.jpg')).Length;       FilePath=(Join-Path $sysPath 'image_1x1.jpg') })
-    $Plan.Add([pscustomobject]@{ Area=$AreaName; Category='System'; Extension='zip';    SizeBytes=(Get-Item $zipPath).Length;                                  FilePath=$zipPath })
 }
 
 Write-Host '=== 데이터 보호 테스트용 파일 생성기 시작 ==='
 $normalRoot = Read-PathPrompt -PromptText '일반영역 폴더 경로를 입력하세요'
 $secureRoot = Read-PathPrompt -PromptText '보안영역 폴더 경로를 입력하세요'
-$resultRoot = Read-PathPrompt -PromptText '생성 계획 CSV를 저장할 폴더 경로를 입력하세요'
-
 if ($normalRoot -eq $secureRoot) {
     throw '일반영역과 보안영역 경로는 서로 달라야 합니다.'
 }
 
-Ensure-Directory -Path $resultRoot
-
 $seed = Get-Random -Maximum 1000000
 $rand = [System.Random]::new($seed)
-$plan = New-Object System.Collections.Generic.List[object]
+Initialize-Area -AreaName 'NormalArea' -RootPath $normalRoot -Random $rand
+Initialize-Area -AreaName 'SecureArea' -RootPath $secureRoot -Random $rand
 
-Initialize-Area -AreaName 'NormalArea' -RootPath $normalRoot -Random $rand -Plan $plan
-Initialize-Area -AreaName 'SecureArea' -RootPath $secureRoot -Random $rand -Plan $plan
-
-$timestamp = (Get-Date).ToString('yyyyMMdd_HHmmss')
-$planPath = Join-Path $resultRoot ("TestData_Plan_{0}_{1}.csv" -f $seed, $timestamp)
-$plan | Export-Csv -Path $planPath -Encoding UTF8 -NoTypeInformation
-
-Write-Host "생성 계획 CSV: $planPath"
+Write-Host "사용된 난수 시드: $seed"
 Write-Host '=== 파일 생성이 완료되었습니다. ==='
