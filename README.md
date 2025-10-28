@@ -1,11 +1,10 @@
 # Ransomware Validation Automation Script
 
-이 저장소는 보안영역과 일반영역 폴더에 샘플 데이터를 배포하고, RanSim / Atomic Red Team / Caldera 시뮬레이터 준비 상태를 점검한 뒤, 파일 무결성 비교를 통해 랜섬웨어 및 악성코드 침해 여부를 측정하는 PowerShell 스크립트를 제공합니다.
+이 저장소는 보안영역과 일반영역 폴더에 이미 준비된 업무 데이터를 활용하여 RanSim / Atomic Red Team / Caldera 시뮬레이터 준비 상태를 점검하고, 파일 무결성 비교를 통해 랜섬웨어 및 악성코드 침해 여부를 측정하는 PowerShell 스크립트를 제공합니다.
 
 ## 주요 기능
 - 일반영역 및 보안영역 경로, 보고서 저장 경로를 인터랙티브하게 입력받습니다.
-- 각 영역에 9종 문서 확장자(doc, docx, ppt, pptx, xls, xlsx, hwp, hwpx, txt)를 동일하게 배치하되, 확장자별 무작위 용량을 선택해 샘플 데이터를 생성하고 선택 결과(Seed 포함)를 CSV로 기록합니다.
-- 시스템 구성/환경 파일과 민감 데이터 예시 파일(.png, .jpg, .zip, .dll, .csv, .reg, .config, .dat 등)도 함께 생성하여 운영 환경을 모사합니다.
+- 각 영역에 이미 배치된 문서/시스템 데이터를 그대로 사용하며, 확장자·용량·해시를 스캔하여 기준 정보를 확보합니다. 필요한 파일이 누락된 경우 경고만 출력하고 기존 자산을 변경하지 않습니다.
 - 생성 직후 데이터 보호 성능(문서/시스템 파일 수, 총 용량 등)을 측정해 기준선을 CSV로 남깁니다.
 - RanSim, Invoke-AtomicRedTeam 모듈, Caldera 설치 여부를 확인하고 필요 시 다운로드/설치를 돕습니다.
 - Invoke-AtomicRedTeam 모듈이 있지만 Atomics 콘텐츠가 누락된 경우 모듈 설치 경로나 `C:\AtomicRedTeam`을 자동으로 탐색하고, 필요 시 GitHub에서 Atomics 패키지를 내려받아 배치합니다.
@@ -21,11 +20,11 @@
    .\ransomware_validation.ps1
    ```
 3. 안내에 따라 일반영역, 보안영역, 보고서 경로를 입력합니다. 폴더가 존재하지 않으면 자동으로 생성합니다.
-4. 스크립트가 샘플 데이터를 배포한 뒤 자동으로 데이터 보호 성능을 측정하고 `DataProtection_Baseline_*.csv` 파일을 생성합니다.
+4. 스크립트가 기존 데이터를 스캔한 뒤 자동으로 데이터 보호 성능을 측정하고 `DataProtection_Baseline_*.csv` 파일을 생성합니다.
 5. Atomic Red Team 모듈이 감지되면 스크립트가 자동으로 50개 악성 행위 시나리오를 실행합니다. 결과는 `Malware_Performance_Assessment_*.csv`, `Malware_Assessment_Summary_*.csv`, `Malware_Assessment_FileStatus_*.csv`, `Malware_Assessment_Log_*.txt`로 저장되며, `Malware_Assessment_FileStatus_*.csv`에는 테스트마다 각 파일의 존재 여부·크기·SHA256 해시(전/후)가 기록됩니다.
-6. RanSim / Caldera / Invoke-AtomicRedTeam이 설치되어 있지 않으면 스크립트가 자동으로 다운로드와 무인 설치/압축 해제를 시도하고, RanSim 실행 파일이 준비되면 자동으로 기동합니다.
+6. RanSim / Caldera / Invoke-AtomicRedTeam이 설치되어 있지 않으면 스크립트가 자동으로 다운로드와 무인 설치/압축 해제를 시도하고, RanSim 실행 파일이 준비되면 자동으로 기동합니다. RanSim 패키지를 내려받지 못하면 설치 파일 경로를 한 번 추가 입력해 수동 패키지를 사용할 수 있습니다.
 7. 추가 입력 없이 시뮬레이터 준비부터 악성 행위 평가, 최종 랜섬웨어 무결성 검증까지 모두 연속 실행됩니다.
-8. 결과는 지정한 보고서 경로에 CSV/JSON으로 저장되며 문서 샘플 계획, 악성 행위 로그, 파일 단위 검증 결과까지 확인할 수 있습니다.
+8. 결과는 지정한 보고서 경로에 CSV/JSON으로 저장되며 악성 행위 로그와 파일 단위 검증 결과까지 확인할 수 있습니다.
 
 > ⚠️ **주의:** 실제 운영 환경이 아닌, 승인된 테스트 환경에서만 시뮬레이션을 수행하세요. 시뮬레이터 설치 및 실행 시 각 제품의 라이선스 정책과 보안 지침을 준수해야 합니다.
 
@@ -35,7 +34,6 @@
 - 인터넷 차단 환경이라면, 공인 네트워크에서 공식 패키지를 미리 내려받아 `C:\Temp\SecurityTools` 또는 사용자가 지정한 스테이징 폴더에 복사한 뒤 스크립트를 다시 실행하세요.
 
 ## 보고서 예시
-- `DocumentPlan_YYYYMMDD_HHMMSS.csv`: 확장자별 선택된 파일 용량과 난수 시드 기록
 - `DataProtection_Baseline_YYYYMMDD_HHMMSS.csv`: 랜섬웨어 실행 전 각 영역의 문서/시스템 파일 현황
 - `Malware_Performance_Assessment_YYYYMMDD_HHMMSS.csv`: Atomic Red Team 50개 시나리오 실행 결과(성공/실패, 영향 파일, Atomic 실행 여부)
 - `Malware_Assessment_Summary_YYYYMMDD_HHMMSS.csv`: 영역별 핵심 지표(무결성 보존률, 쓰기/압축/유출 차단율 등)

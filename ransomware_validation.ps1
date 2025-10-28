@@ -112,85 +112,6 @@ function Read-ValidatedPath {
     }
 }
 
-function New-DocumentSelectionPlan {
-    [CmdletBinding()]
-    param()
-
-    # 확장자별로 무작위 용량을 뽑되 재현성을 위해 하나의 시드를 공유합니다.
-    $docExtensions = @('doc','docx','ppt','pptx','xls','xlsx','hwp','hwpx','txt')
-    $sizeOptions = @(
-        [pscustomobject]@{ Label = 'Small';  Bytes = 64KB },
-        [pscustomobject]@{ Label = 'Medium'; Bytes = 256KB },
-        [pscustomobject]@{ Label = 'Large';  Bytes = 1MB }
-    )
-
-    $seed = Get-Random -Minimum 1000 -Maximum 999999
-    $random = [System.Random]::new($seed)
-
-    $files = foreach ($ext in $docExtensions) {
-        $choice = $sizeOptions[$random.Next(0, $sizeOptions.Count)]
-        [pscustomobject]@{
-            Extension  = $ext
-            SizeLabel  = $choice.Label
-            SizeBytes  = $choice.Bytes
-        }
-    }
-
-    return [pscustomobject]@{
-        Seed  = $seed
-        Files = $files
-    }
-}
-
-function Write-RandomFile {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][string]$Path,
-        [Parameter(Mandatory)][int]$SizeBytes,
-        [Parameter()][int]$Seed
-    )
-
-    $directory = Split-Path -Path $Path -Parent
-    if (-not (Test-Path -LiteralPath $directory)) {
-        New-Item -ItemType Directory -Path $directory -Force | Out-Null
-    }
-
-    $random = if ($PSBoundParameters.ContainsKey('Seed')) {
-        [System.Random]::new($Seed)
-    }
-    else {
-        [System.Random]::new()
-    }
-
-    $buffer = New-Object byte[] $SizeBytes
-    $random.NextBytes($buffer)
-    [System.IO.File]::WriteAllBytes($Path, $buffer)
-}
-
-function Export-DocumentSelectionPlan {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]$Plan,
-        [Parameter(Mandatory)][string]$ReportPath
-    )
-
-    $timestamp = Get-Date -Format yyyyMMdd_HHmmss
-    $csvPath = Join-Path $ReportPath ("DocumentPlan_{0}.csv" -f $timestamp)
-
-    $records = foreach ($entry in $Plan.Files) {
-        [pscustomobject]@{
-            Seed           = $Plan.Seed
-            Extension      = $entry.Extension
-            SizeLabel      = $entry.SizeLabel
-            SizeBytes      = $entry.SizeBytes
-            SizeKilobytes  = [Math]::Round($entry.SizeBytes / 1KB, 2)
-        }
-    }
-
-    $records | Export-Csv -Path $csvPath -Encoding UTF8 -NoTypeInformation
-    return $csvPath
-}
-
 function Add-BinaryMarker {
     [CmdletBinding()]
     param(
@@ -236,180 +157,26 @@ function Initialize-AreaData {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$AreaName,
-        [Parameter(Mandatory)][string]$TargetPath,
-        [Parameter(Mandatory)]$DocumentPlan
+        [Parameter(Mandatory)][string]$TargetPath
     )
 
-    Write-Verbose "[$AreaName] 샘플 데이터를 생성하는 중입니다."
+    Write-Verbose "[$AreaName] 기존 데이터를 점검하고 작업 공간을 구성합니다."
 
     $documentDir = Join-Path $TargetPath 'Docs'
     $systemDir   = Join-Path $TargetPath 'SysCfg'
     $workspace   = Join-Path $TargetPath '_AssessmentWorkspace'
     $scriptsDir  = Join-Path $workspace 'Scripts'
 
-    New-Item -ItemType Directory -Path $documentDir,$systemDir,$workspace,$scriptsDir -Force | Out-Null
-
-    $docIndex = @{}
-    $systemIndex = @{}
-    $manifest = New-Object System.Collections.Generic.List[object]
-
-    for ($i = 0; $i -lt $DocumentPlan.Files.Count; $i++) {
-        $entry = $DocumentPlan.Files[$i]
-        $seed  = $DocumentPlan.Seed + $i
-        $fileName = "Doc_{0}.{1}" -f ($entry.Extension.ToUpper()), $entry.Extension
-        $filePath = Join-Path $documentDir $fileName
-        Write-RandomFile -Path $filePath -SizeBytes $entry.SizeBytes -Seed $seed
-        $docIndex[$entry.Extension] = $filePath
-        $manifest.Add([pscustomobject]@{
-            Category   = 'Docs'
-            Extension  = $entry.Extension
-            SizeLabel  = $entry.SizeLabel
-            SizeBytes  = $entry.SizeBytes
-            FilePath   = $filePath
-        }) | Out-Null
+    if (-not (Test-Path -LiteralPath $documentDir)) {
+        Write-Warning "[$AreaName] Docs 폴더가 없어 새로 생성합니다. 실제 평가에는 사전 준비된 파일을 배치해 주세요."
+        New-Item -ItemType Directory -Path $documentDir -Force | Out-Null
+    }
+    if (-not (Test-Path -LiteralPath $systemDir)) {
+        Write-Warning "[$AreaName] SysCfg 폴더가 없어 새로 생성합니다. 실제 평가에는 사전 준비된 파일을 배치해 주세요."
+        New-Item -ItemType Directory -Path $systemDir -Force | Out-Null
     }
 
-    $pngPath = Join-Path $documentDir 'DocPreview.png'
-    if (-not (Test-Path -LiteralPath $pngPath)) {
-        $pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMBAFdxl3sAAAAASUVORK5CYII='
-        [System.IO.File]::WriteAllBytes($pngPath, [Convert]::FromBase64String($pngBase64))
-    }
-    $docIndex['png'] = $pngPath
-    $manifest.Add([pscustomobject]@{
-        Category  = 'Docs'
-        Extension = 'png'
-        SizeLabel = 'Fixed'
-        SizeBytes = (Get-Item $pngPath).Length
-        FilePath  = $pngPath
-    }) | Out-Null
-
-    $jpgPath = Join-Path $documentDir 'DocPreview.jpg'
-    if (-not (Test-Path -LiteralPath $jpgPath)) {
-        $jpgBase64 = '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDAREAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAb/xAAVEQEBAAAAAAAAAAAAAAAAAAAAEf/aAAwDAQACEAMQAAAB7AAAAP/EABQRAQAAAAAAAAAAAAAAAAAAABD/2gAIAQEAAT8AJ//EABQRAQAAAAAAAAAAAAAAAAAAABD/2gAIAQIBAT8AJ//EABQRAQAAAAAAAAAAAAAAAAAAABD/2gAIAQEABj8AJ//Z'
-        try {
-            [System.IO.File]::WriteAllBytes($jpgPath, [Convert]::FromBase64String($jpgBase64))
-        }
-        catch {
-            Write-Warning "JPEG 샘플 이미지를 만드는 중 오류가 발생했습니다: $($_.Exception.Message)"
-            Set-Content -Path $jpgPath -Value 'Fallback JPEG sample' -Encoding UTF8
-        }
-    }
-    $docIndex['jpg'] = $jpgPath
-    $manifest.Add([pscustomobject]@{
-        Category  = 'Docs'
-        Extension = 'jpg'
-        SizeLabel = 'Fixed'
-        SizeBytes = (Get-Item $jpgPath).Length
-        FilePath  = $jpgPath
-    }) | Out-Null
-
-    $hostsPath = Join-Path $systemDir 'hosts_copy'
-    "127.0.0.1`tlocalhost`n# $AreaName sample hosts" | Set-Content -Path $hostsPath -Encoding ASCII
-    $systemIndex['hosts'] = $hostsPath
-    $manifest.Add([pscustomobject]@{
-        Category  = 'SysCfg'
-        Extension = 'hosts'
-        SizeLabel = 'Fixed'
-        SizeBytes = (Get-Item $hostsPath).Length
-        FilePath  = $hostsPath
-    }) | Out-Null
-
-    $envPath = Join-Path $systemDir 'system.env'
-    "AREA=$AreaName`nMODE=Evaluation`nUPDATED=$(Get-Date -Format o)" | Set-Content -Path $envPath -Encoding UTF8
-    $systemIndex['env'] = $envPath
-    $manifest.Add([pscustomobject]@{
-        Category  = 'SysCfg'
-        Extension = 'env'
-        SizeLabel = 'Fixed'
-        SizeBytes = (Get-Item $envPath).Length
-        FilePath  = $envPath
-    }) | Out-Null
-
-    $jsonPath = Join-Path $systemDir 'appsettings.json'
-    @{ Application = 'DataProtectionAssessment'; Area = $AreaName; Generated = (Get-Date -Format o) } | ConvertTo-Json -Depth 3 | Set-Content -Path $jsonPath -Encoding UTF8
-    $systemIndex['json'] = $jsonPath
-    $manifest.Add([pscustomobject]@{
-        Category  = 'SysCfg'
-        Extension = 'json'
-        SizeLabel = 'Fixed'
-        SizeBytes = (Get-Item $jsonPath).Length
-        FilePath  = $jsonPath
-    }) | Out-Null
-
-    $iniPath = Join-Path $systemDir 'config.ini'
-    "[Core]`nRole=$AreaName`nLastGenerated=$(Get-Date -Format o)" | Set-Content -Path $iniPath -Encoding UTF8
-    $systemIndex['ini'] = $iniPath
-    $manifest.Add([pscustomobject]@{
-        Category  = 'SysCfg'
-        Extension = 'ini'
-        SizeLabel = 'Fixed'
-        SizeBytes = (Get-Item $iniPath).Length
-        FilePath  = $iniPath
-    }) | Out-Null
-
-    $regPath = Join-Path $systemDir 'registry_backup.reg'
-    @"
-Windows Registry Editor Version 5.00
-
-[HKEY_LOCAL_MACHINE\SOFTWARE\SampleCompany]
-"SecureArea"="$AreaName"
-"LastBaseline"="$(Get-Date -Format o)"
-"@ | Set-Content -Path $regPath -Encoding Unicode
-    $systemIndex['reg'] = $regPath
-    $manifest.Add([pscustomobject]@{
-        Category  = 'SysCfg'
-        Extension = 'reg'
-        SizeLabel = 'Fixed'
-        SizeBytes = (Get-Item $regPath).Length
-        FilePath  = $regPath
-    }) | Out-Null
-
-    $csvPath = Join-Path $systemDir 'system_profile.csv'
-    "Key,Value`nArea,$AreaName`nGenerated,$([DateTime]::UtcNow.ToString('o'))" | Set-Content -Path $csvPath -Encoding UTF8
-    $systemIndex['csv'] = $csvPath
-    $manifest.Add([pscustomobject]@{
-        Category  = 'SysCfg'
-        Extension = 'csv'
-        SizeLabel = 'Fixed'
-        SizeBytes = (Get-Item $csvPath).Length
-        FilePath  = $csvPath
-    }) | Out-Null
-
-    $configPath = Join-Path $systemDir 'appsettings.config'
-    "<configuration>`n  <appSettings>`n    <add key='Area' value='$AreaName' />`n    <add key='Baseline' value='$(Get-Date -Format o)' />`n  </appSettings>`n</configuration>" | Set-Content -Path $configPath -Encoding UTF8
-    $systemIndex['config'] = $configPath
-    $manifest.Add([pscustomobject]@{
-        Category  = 'SysCfg'
-        Extension = 'config'
-        SizeLabel = 'Fixed'
-        SizeBytes = (Get-Item $configPath).Length
-        FilePath  = $configPath
-    }) | Out-Null
-
-    $datPath = Join-Path $systemDir 'cache.dat'
-    Write-RandomFile -Path $datPath -SizeBytes 4096 -Seed ($DocumentPlan.Seed + 100)
-    $systemIndex['dat'] = $datPath
-    $manifest.Add([pscustomobject]@{
-        Category  = 'SysCfg'
-        Extension = 'dat'
-        SizeLabel = 'Fixed'
-        SizeBytes = (Get-Item $datPath).Length
-        FilePath  = $datPath
-    }) | Out-Null
-
-    $dllPath = Join-Path $systemDir 'SupportLibrary.dll'
-    if (-not (Test-Path -LiteralPath $dllPath)) {
-        $dllBase64 = 'TVqQAAMAAAAEAAAA//8AALgAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
-        [System.IO.File]::WriteAllBytes($dllPath, [Convert]::FromBase64String($dllBase64))
-    }
-    $systemIndex['dll'] = $dllPath
-    $manifest.Add([pscustomobject]@{
-        Category  = 'SysCfg'
-        Extension = 'dll'
-        SizeLabel = 'Fixed'
-        SizeBytes = (Get-Item $dllPath).Length
-        FilePath  = $dllPath
-    }) | Out-Null
+    New-Item -ItemType Directory -Path $workspace,$scriptsDir -Force | Out-Null
 
     $operationPaths = [pscustomobject]@{
         DocsArchive        = Join-Path $workspace 'DocsArchive.zip'
@@ -427,6 +194,59 @@ Windows Registry Editor Version 5.00
     }
 
     New-Item -ItemType Directory -Path $operationPaths.DocsArchiveExtract,$operationPaths.SysArchiveExtract,$operationPaths.ExfilRoot,$operationPaths.DiscoveryFolder -Force | Out-Null
+
+    $docIndex = @{}
+    $manifest = New-Object System.Collections.Generic.List[object]
+    if (Test-Path -LiteralPath $documentDir) {
+        $docFiles = Get-ChildItem -Path $documentDir -File -Recurse -ErrorAction SilentlyContinue
+        foreach ($file in $docFiles) {
+            $ext = $file.Extension.TrimStart('.').ToLowerInvariant()
+            if ([string]::IsNullOrWhiteSpace($ext)) { continue }
+            if (-not $docIndex.ContainsKey($ext)) {
+                $docIndex[$ext] = $file.FullName
+            }
+            $manifest.Add([pscustomobject]@{
+                Category  = 'Docs'
+                Extension = $ext
+                SizeBytes = $file.Length
+                FilePath  = $file.FullName
+            }) | Out-Null
+        }
+    }
+
+    $systemIndex = @{}
+    if (Test-Path -LiteralPath $systemDir) {
+        $systemFiles = Get-ChildItem -Path $systemDir -File -Recurse -ErrorAction SilentlyContinue
+        foreach ($file in $systemFiles) {
+            $ext = $file.Extension.TrimStart('.').ToLowerInvariant()
+            $name = $file.Name.ToLowerInvariant()
+            if (-not [string]::IsNullOrWhiteSpace($ext) -and -not $systemIndex.ContainsKey($ext)) {
+                $systemIndex[$ext] = $file.FullName
+            }
+            if (($name -eq 'hosts' -or $name -eq 'hosts_copy') -and -not $systemIndex.ContainsKey('hosts')) {
+                $systemIndex['hosts'] = $file.FullName
+            }
+            $manifest.Add([pscustomobject]@{
+                Category  = 'SysCfg'
+                Extension = if ([string]::IsNullOrWhiteSpace($ext)) { $name } else { $ext }
+                SizeBytes = $file.Length
+                FilePath  = $file.FullName
+            }) | Out-Null
+        }
+    }
+
+    $expectedDocs = @('doc','docx','ppt','pptx','xls','xlsx','hwp','hwpx','txt')
+    foreach ($ext in $expectedDocs) {
+        if (-not $docIndex.ContainsKey($ext)) {
+            Write-Warning "[$AreaName] .$ext 문서를 찾지 못했습니다. 해당 확장자를 평가에 포함하려면 폴더에 파일을 추가하세요."
+        }
+    }
+
+    foreach ($key in @('env','json')) {
+        if (-not $systemIndex.ContainsKey($key)) {
+            Write-Warning "[$AreaName] 시스템 기준 파일($key) 을 찾지 못했습니다. 관련 테스트는 실패로 기록될 수 있습니다."
+        }
+    }
 
     return [pscustomobject]@{
         DocsPath      = $documentDir
@@ -1048,35 +868,35 @@ function Resolve-AtomicsFolder {
         }
     }
 
-    foreach ($path in $PreferredPaths) { & $addCandidate.Invoke($path) }
+    foreach ($path in $PreferredPaths) { $addCandidate.Invoke($path) }
 
     if ($env:ATOMIC_RED_TEAM_PATH) {
-        & $addCandidate.Invoke($env:ATOMIC_RED_TEAM_PATH)
+        $addCandidate.Invoke($env:ATOMIC_RED_TEAM_PATH)
     }
 
     $defaultRoots = @('C:\\AtomicRedTeam', 'D:\\AtomicRedTeam')
     foreach ($root in $defaultRoots) {
-        & $addCandidate.Invoke((Join-Path $root 'atomic-red-team-master\\atomics'))
-        & $addCandidate.Invoke((Join-Path $root 'atomic-red-team\\atomics'))
-        & $addCandidate.Invoke((Join-Path $root 'atomics'))
+        $addCandidate.Invoke((Join-Path $root 'atomic-red-team-master\\atomics'))
+        $addCandidate.Invoke((Join-Path $root 'atomic-red-team\\atomics'))
+        $addCandidate.Invoke((Join-Path $root 'atomics'))
     }
 
-    & $addCandidate.Invoke('C:\\AtomicRedTeam\\atomic-red-team-master\\atomics')
-    & $addCandidate.Invoke('C:\\AtomicRedTeam\\atomics')
-    & $addCandidate.Invoke((Join-Path $env:ProgramData 'AtomicRedTeam\\atomics'))
-    & $addCandidate.Invoke((Join-Path $env:ProgramFiles 'AtomicRedTeam\\atomics'))
+    $addCandidate.Invoke('C:\\AtomicRedTeam\\atomic-red-team-master\\atomics')
+    $addCandidate.Invoke('C:\\AtomicRedTeam\\atomics')
+    $addCandidate.Invoke((Join-Path $env:ProgramData 'AtomicRedTeam\\atomics'))
+    $addCandidate.Invoke((Join-Path $env:ProgramFiles 'AtomicRedTeam\\atomics'))
 
     $modules = Get-Module -ListAvailable -Name Invoke-AtomicRedTeam
     foreach ($module in $modules) {
         $moduleBase = $module.ModuleBase
         if (-not [string]::IsNullOrWhiteSpace($moduleBase)) {
-            & $addCandidate.Invoke((Join-Path $moduleBase 'atomics'))
-            & $addCandidate.Invoke((Join-Path $moduleBase 'atomic-red-team-master\\atomics'))
+            $addCandidate.Invoke((Join-Path $moduleBase 'atomics'))
+            $addCandidate.Invoke((Join-Path $moduleBase 'atomic-red-team-master\\atomics'))
             $parent = Split-Path -Path $moduleBase -Parent
             if ($parent) {
-                & $addCandidate.Invoke((Join-Path $parent 'atomics'))
-                & $addCandidate.Invoke((Join-Path $parent 'atomic-red-team\\atomics'))
-                & $addCandidate.Invoke((Join-Path $parent 'atomic-red-team-master\\atomics'))
+                $addCandidate.Invoke((Join-Path $parent 'atomics'))
+                $addCandidate.Invoke((Join-Path $parent 'atomic-red-team\\atomics'))
+                $addCandidate.Invoke((Join-Path $parent 'atomic-red-team-master\\atomics'))
             }
         }
     }
@@ -1532,21 +1352,14 @@ function Ensure-RanSim {
     # 최신 RanSim 패키지 다운로드 주소입니다. 필요 시 보안망에서 미리 다운로드해 두세요.
     $downloadUrl = 'https://assets.knowbe4.com/download/ransim/KnowBe4RanSim.zip'
     $localZip    = Join-Path $StagingPath 'KnowBe4RanSim.zip'
+    $installerPath = $null
     $downloadResult = Invoke-SafeDownload -Uri $downloadUrl -OutFile $localZip -SkipIfExists
     if ($downloadResult.Success) {
         Write-Host "RanSim 설치 패키지를 다운로드했습니다: $localZip"
         Expand-Archive -Path $localZip -DestinationPath $StagingPath -Force
         $installer = Get-ChildItem -Path $StagingPath -Filter 'RanSim*.msi' -Recurse | Select-Object -First 1
         if ($null -ne $installer) {
-            $arguments = "/i `"$($installer.FullName)`" /qn /norestart"
-            Write-Host 'RanSim 설치 관리자를 무인 설치 모드로 실행합니다.' -ForegroundColor Yellow
-            try {
-                $proc = Start-Process -FilePath msiexec.exe -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden -ErrorAction Stop
-                Write-Host "RanSim 설치 프로세스가 종료되었습니다 (ExitCode=$($proc.ExitCode))." -ForegroundColor Green
-            }
-            catch {
-                Write-Warning "RanSim 무인 설치 중 오류 발생: $($_.Exception.Message)"
-            }
+            $installerPath = $installer.FullName
         }
         else {
             Write-Warning 'RanSim 설치 파일을 찾지 못했습니다. 압축 해제된 폴더를 확인하세요.'
@@ -1554,6 +1367,40 @@ function Ensure-RanSim {
     }
     else {
         Write-Warning 'RanSim 패키지를 자동으로 내려받지 못했습니다. 제공된 안내에 따라 수동으로 패키지를 준비한 후 스크립트를 다시 실행해 주세요.'
+        $manualPath = Read-Host 'RanSim 설치 파일(.msi 또는 .exe) 전체 경로를 입력하세요 (Enter 입력 시 건너뜀)'
+        if (-not [string]::IsNullOrWhiteSpace($manualPath)) {
+            try {
+                $resolved = (Resolve-Path -Path $manualPath -ErrorAction Stop).ProviderPath
+                if (Test-Path -LiteralPath $resolved) {
+                    $installerPath = $resolved
+                }
+            }
+            catch {
+                Write-Warning "입력한 경로를 확인할 수 없습니다: $manualPath"
+            }
+        }
+    }
+
+    if ($installerPath) {
+        $extension = [System.IO.Path]::GetExtension($installerPath)
+        Write-Host "RanSim 설치 프로그램 실행 경로: $installerPath" -ForegroundColor Yellow
+        try {
+            if ($extension -ieq '.msi') {
+                $arguments = "/i `"$installerPath`" /qn /norestart"
+                $proc = Start-Process -FilePath msiexec.exe -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden -ErrorAction Stop
+                Write-Host "RanSim MSI 설치가 종료되었습니다 (ExitCode=$($proc.ExitCode))." -ForegroundColor Green
+            }
+            elseif ($extension -ieq '.exe') {
+                $proc = Start-Process -FilePath $installerPath -ArgumentList @('/quiet','/norestart') -Wait -PassThru -ErrorAction Stop
+                Write-Host "RanSim EXE 설치가 종료되었습니다 (ExitCode=$($proc.ExitCode))." -ForegroundColor Green
+            }
+            else {
+                Write-Warning '지원되지 않는 설치 파일 형식입니다. .msi 또는 .exe 파일을 제공해 주세요.'
+            }
+        }
+        catch {
+            Write-Warning "RanSim 설치 실행 중 오류 발생: $($_.Exception.Message)"
+        }
     }
     $ranSimExe = 'C:\\KB4\\Newsim\\Ranstart.exe'
     if (Test-Path -LiteralPath $ranSimExe) {
@@ -1742,23 +1589,19 @@ $generalPath = Read-ValidatedPath -Prompt '일반영역 폴더 경로를 입력�
 $securePath  = Read-ValidatedPath -Prompt '보안영역 폴더 경로를 입력하세요' -Type Directory -AllowCreate
 $reportPath  = Read-ValidatedPath -Prompt '결과 데이터를 저장할 폴더 경로를 입력하세요' -Type Directory -AllowCreate
 
-# 2단계: 입력받은 경로 안에 예제 문서/시스템 데이터를 생성합니다.
+# 2단계: 입력받은 경로 안의 기존 문서/시스템 데이터를 기반으로 평가 컨텍스트를 구성합니다.
 $areas = @(
     [pscustomobject]@{ Name = 'GeneralArea'; Path = $generalPath },
     [pscustomobject]@{ Name = 'SecureArea';  Path = $securePath }
 )
 
-$documentPlan = New-DocumentSelectionPlan
-$planCsv = Export-DocumentSelectionPlan -Plan $documentPlan -ReportPath $reportPath
-Write-Host "문서 샘플 구성 계획을 CSV로 저장했습니다 (Seed: $($documentPlan.Seed)): $planCsv" -ForegroundColor Green
-
 foreach ($area in $areas) {
-    $context = Initialize-AreaData -AreaName $area.Name -TargetPath $area.Path -DocumentPlan $documentPlan
+    $context = Initialize-AreaData -AreaName $area.Name -TargetPath $area.Path
     $area | Add-Member -NotePropertyName Context -NotePropertyValue $context -Force
     Write-Host "[$($area.Name)] Docs: $($context.DocsPath) / SysCfg: $($context.SysCfgPath)" -ForegroundColor Green
 }
 
-# 3단계: 생성된 데이터를 바탕으로 데이터 보호 성능을 평가합니다.
+# 3단계: 구성된 컨텍스트를 바탕으로 데이터 보호 성능을 평가합니다.
 Measure-DataProtectionBaseline -Areas $areas -ReportPath $reportPath | Out-Null
 
 # 4단계: 랜섬웨어/악성코드 비교 전에 현재 상태를 기준선으로 저장합니다.
