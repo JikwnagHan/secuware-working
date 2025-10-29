@@ -4,7 +4,7 @@
     ------------------------------------------------------------
     이 스크립트는 일반영역과 보안영역에 테스트 데이터를 자동으로 재구성하고,
     Atomic Red Team 기반의 악성행위 시뮬레이션과 RanSim 기반의 랜섬웨어 테스트를
-    순차적으로 수행한 뒤, 평가 결과를 CSV/JSON/XLSXM/DOCX 보고서로 출력합니다.
+    순차적으로 수행한 뒤, 평가 결과를 CSV/JSON/XLSX/DOCX 보고서로 출력합니다.
 
     사용 흐름
     1. 일반영역/보안영역/결과 저장 위치를 입력합니다.
@@ -12,7 +12,7 @@
     3. RanSim, Atomic Red Team 모듈, Atomics 콘텐츠, Caldera 존재 여부를 점검합니다.
     4. 7개 버킷 30개 대표 악성행위 시뮬레이션을 자동으로 실행합니다.
     5. RanSim을 호출하여 랜섬웨어 침해 여부를 측정합니다.
-    6. 모든 결과를 CSV, JSON, XLSXM, DOCX로 저장합니다.
+    6. 모든 결과를 CSV, JSON, XLSX, DOCX로 저장합니다.
 
     관리자 권한 PowerShell에서 실행해야 하며, 테스트 전용 환경에서만 사용하세요.
 !#>
@@ -33,7 +33,7 @@ function Read-RequiredPath {
     while ($true) {
         $value = Read-Host -Prompt $PromptText
         if ([string]::IsNullOrWhiteSpace($value)) {
-            Write-Warning '경로를 입력해야 합니다. 다시 시도하세요.'
+            Write-Host '경로를 입력해야 합니다. 다시 시도하세요.' -ForegroundColor Yellow
             continue
         }
         return $value.Trim()
@@ -55,7 +55,7 @@ function Clear-Directory {
             Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction Stop
         }
         catch {
-            Write-Warning "삭제 실패: $($_.FullName) - $($_.Exception.Message)"
+            Write-Host "삭제 실패: $($_.FullName) - $($_.Exception.Message)" -ForegroundColor Yellow
         }
     }
 }
@@ -117,13 +117,13 @@ function Get-DocumentPlan {
     $rand = [System.Random]::new($Seed)
     $sizeOptions = @(65536, 262144, 1048576)
     $docExtensions = @('doc','docx','ppt','pptx','xls','xlsx','hwp','hwpx','txt')
-    $plan = [System.Collections.Generic.List[object]]::new()
+    $plan = New-Object System.Collections.ArrayList
     foreach ($ext in $docExtensions) {
         $size = $sizeOptions[$rand.Next(0, $sizeOptions.Count)]
         $fileName = "sample_{0}_{1}.{0}" -f $ext, $size
         $bytes = New-Object byte[] $size
         $rand.NextBytes($bytes)
-        $plan.Add([PSCustomObject]@{ FileName = $fileName; Bytes = $bytes })
+        [void]$plan.Add([PSCustomObject]@{ FileName = $fileName; Bytes = $bytes })
     }
     return $plan
 }
@@ -203,8 +203,9 @@ function Compare-Snapshots {
         [string] $Message,
         [datetime] $Timestamp
     )
-    $allKeys = [System.Collections.Generic.HashSet[string]]::new($Before.Keys)
-    $null = $allKeys.UnionWith($After.Keys)
+    $beforeKeys = if ($Before) { $Before.Keys } else { @() }
+    $afterKeys = if ($After) { $After.Keys } else { @() }
+    $allKeys = @($beforeKeys + $afterKeys) | Sort-Object -Unique
     $records = @()
     foreach ($key in $allKeys) {
         $b = $Before[$key]
@@ -254,28 +255,28 @@ function Invoke-SafeDownload {
     catch { }
     try {
         Invoke-WebRequest -Uri $Uri -OutFile $DestinationPath -UseBasicParsing -ErrorAction Stop
-        return $true
+        return [PSCustomObject]@{ Success = $true; Message = $null }
     }
     catch {
-        Write-Warning "원격 파일 다운로드 실패: $Uri - $($_.Exception.Message)"
-        return $false
+        return [PSCustomObject]@{ Success = $false; Message = $_.Exception.Message }
     }
 }
 
 function Ensure-AtomicToolkit {
+    $messages = New-Object System.Collections.ArrayList
     $module = Get-Module -Name Invoke-AtomicRedTeam -ListAvailable | Select-Object -First 1
     if (-not $module) {
-        Write-Host 'Invoke-AtomicRedTeam 모듈이 없어 설치를 시도합니다.' -ForegroundColor Yellow
         try {
             Install-Module -Name Invoke-AtomicRedTeam -Scope CurrentUser -Force -ErrorAction Stop
             $module = Get-Module -Name Invoke-AtomicRedTeam -ListAvailable | Select-Object -First 1
         }
         catch {
-            Write-Warning "Invoke-AtomicRedTeam 설치 실패: $($_.Exception.Message)"
+            [void]$messages.Add("Invoke-AtomicRedTeam 모듈 설치 실패: $($_.Exception.Message)")
         }
     }
     if (-not $module) {
-        return [PSCustomObject]@{ Module = $null; AtomicsPath = $null }
+        [void]$messages.Add('Invoke-AtomicRedTeam 모듈을 확인하지 못했습니다. 내장 악성 행위 시뮬레이션으로 진행합니다.')
+        return [PSCustomObject]@{ Module = $null; AtomicsPath = $null; Messages = $messages }
     }
 
     $preferred = @()
@@ -291,7 +292,7 @@ function Ensure-AtomicToolkit {
 
     foreach ($path in $preferred) {
         if (-not [string]::IsNullOrWhiteSpace($path) -and (Test-Path -LiteralPath $path -PathType Container)) {
-            return [PSCustomObject]@{ Module = $module; AtomicsPath = $path }
+            return [PSCustomObject]@{ Module = $module; AtomicsPath = $path; Messages = $messages }
         }
     }
 
@@ -306,67 +307,96 @@ function Ensure-AtomicToolkit {
         Remove-Item -LiteralPath $extractPath -Recurse -Force
     }
     $url = 'https://github.com/redcanaryco/atomic-red-team/archive/refs/heads/master.zip'
-    if (Invoke-SafeDownload -Uri $url -DestinationPath $zipPath) {
+    $download = Invoke-SafeDownload -Uri $url -DestinationPath $zipPath
+    if ($download.Success) {
         try {
             [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $downloadRoot)
         }
         catch {
-            Write-Warning "Atomics 압축 해제 실패: $($_.Exception.Message)"
+            [void]$messages.Add("Atomics 압축 해제 실패: $($_.Exception.Message)")
         }
+    }
+    else {
+        [void]$messages.Add("Atomics 패키지 다운로드 실패: $($download.Message)")
     }
 
     $atomicsCandidate = Join-Path $extractPath 'atomics'
     if (Test-Path -LiteralPath $atomicsCandidate) {
-        return [PSCustomObject]@{ Module = $module; AtomicsPath = $atomicsCandidate }
+        return [PSCustomObject]@{ Module = $module; AtomicsPath = $atomicsCandidate; Messages = $messages }
     }
 
-    Write-Warning 'Atomics 콘텐츠를 확보하지 못했습니다. 수동으로 다운로드 후 ATOMIC_RED_TEAM_PATH 환경 변수를 설정하세요.'
-    return [PSCustomObject]@{ Module = $module; AtomicsPath = $null }
+    [void]$messages.Add('Atomics 콘텐츠를 자동으로 확보하지 못했습니다. 필요 시 GitHub 저장소를 수동으로 내려받아 ATOMIC_RED_TEAM_PATH 환경 변수를 설정하세요.')
+    return [PSCustomObject]@{ Module = $module; AtomicsPath = $null; Messages = $messages }
 }
 
 function Ensure-RanSim {
+    $messages = New-Object System.Collections.ArrayList
     $defaultPath = 'C:\\KB4\\Newsim\\Ranstart.exe'
     if (Test-Path -LiteralPath $defaultPath) {
-        return $defaultPath
+        return [PSCustomObject]@{ Path = $defaultPath; Messages = $messages }
     }
     $downloadDir = 'C:\\Temp\\RanSim'
     Ensure-Directory -Path $downloadDir
     $installer = Join-Path $downloadDir 'RanSim-Setup.msi'
     if (-not (Test-Path -LiteralPath $installer)) {
         $url = 'https://downloads.knowbe4.com/ransim/RanSim-Setup.msi'
-        Invoke-SafeDownload -Uri $url -DestinationPath $installer | Out-Null
+        $download = Invoke-SafeDownload -Uri $url -DestinationPath $installer
+        if (-not $download.Success) {
+            [void]$messages.Add("RanSim 설치 파일 다운로드 실패: $($download.Message)")
+        }
     }
     if (Test-Path -LiteralPath $installer) {
-        Write-Host 'RanSim 설치 관리자를 실행합니다. 설치가 완료되면 계속 진행됩니다.' -ForegroundColor Yellow
         try {
             Start-Process -FilePath 'msiexec.exe' -ArgumentList "/i `"$installer`" /qn" -Wait -ErrorAction Stop
         }
         catch {
-            Write-Warning "RanSim 설치 실패: $($_.Exception.Message)"
+            [void]$messages.Add("RanSim 무인 설치 실패: $($_.Exception.Message)")
         }
     }
     if (Test-Path -LiteralPath $defaultPath) {
-        return $defaultPath
+        return [PSCustomObject]@{ Path = $defaultPath; Messages = $messages }
     }
-    Write-Warning 'RanSim 실행 파일을 찾지 못했습니다. 설치 경로를 직접 입력하세요.'
-    $manual = Read-Host 'RanSim 실행 파일 전체 경로(.exe)를 입력하거나 Enter로 건너뜁니다'
-    if (-not [string]::IsNullOrWhiteSpace($manual) -and (Test-Path -LiteralPath $manual)) {
-        return $manual
+
+    Write-Host 'RanSim 실행 파일(.exe) 또는 설치 폴더 경로를 입력하세요 (Enter로 건너뜁니다):'
+    $manual = Read-Host
+    if (-not [string]::IsNullOrWhiteSpace($manual)) {
+        $manualTrim = $manual.Trim()
+        if (Test-Path -LiteralPath $manualTrim -PathType Container) {
+            $candidate = Get-ChildItem -LiteralPath $manualTrim -Filter 'Ranstart.exe' -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($candidate) {
+                return [PSCustomObject]@{ Path = $candidate.FullName; Messages = $messages }
+            }
+            else {
+                [void]$messages.Add('입력한 폴더에 Ranstart.exe가 없어 기본 비교 절차만 수행합니다.')
+            }
+        }
+        elseif (Test-Path -LiteralPath $manualTrim -PathType Leaf) {
+            return [PSCustomObject]@{ Path = (Resolve-Path -LiteralPath $manualTrim).Path; Messages = $messages }
+        }
+        else {
+            [void]$messages.Add('입력한 경로를 확인할 수 없어 RanSim을 생략합니다.')
+        }
     }
-    return $null
+
+    [void]$messages.Add('RanSim 실행 파일을 확보하지 못했습니다. 필요 시 공식 배포처에서 설치 후 다시 시도하세요.')
+    return [PSCustomObject]@{ Path = $null; Messages = $messages }
 }
 
 function Ensure-Caldera {
+    $messages = New-Object System.Collections.ArrayList
     $default = 'C:\\Caldera'
     if (Test-Path -LiteralPath $default) {
-        return $default
+        return [PSCustomObject]@{ Path = $default; Messages = $messages }
     }
     $downloadDir = 'C:\\Temp\\Caldera'
     Ensure-Directory -Path $downloadDir
     $zipPath = Join-Path $downloadDir 'caldera-master.zip'
     $url = 'https://github.com/mitre/caldera/archive/refs/heads/master.zip'
     if (-not (Test-Path -LiteralPath $zipPath)) {
-        Invoke-SafeDownload -Uri $url -DestinationPath $zipPath | Out-Null
+        $download = Invoke-SafeDownload -Uri $url -DestinationPath $zipPath
+        if (-not $download.Success) {
+            [void]$messages.Add("Caldera 패키지 다운로드 실패: $($download.Message)")
+        }
     }
     if (Test-Path -LiteralPath $zipPath) {
         try {
@@ -374,20 +404,20 @@ function Ensure-Caldera {
                 New-Item -ItemType Directory -Path $default | Out-Null
             }
             [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $default)
-            return $default
+            return [PSCustomObject]@{ Path = $default; Messages = $messages }
         }
         catch {
-            Write-Warning "Caldera 압축 해제 실패: $($_.Exception.Message)"
+            [void]$messages.Add("Caldera 압축 해제 실패: $($_.Exception.Message)")
         }
     }
-    Write-Warning 'Caldera 패키지를 자동으로 준비하지 못했습니다. 수동으로 다운로드해 주세요.'
-    return $null
+    [void]$messages.Add('Caldera 패키지를 자동으로 준비하지 못했습니다. 필요 시 GitHub 릴리스를 수동으로 내려받아 압축을 해제하세요.')
+    return [PSCustomObject]@{ Path = $null; Messages = $messages }
 }
 #endregion
 
 #region 악성 행위 시뮬레이션 계획
 function Get-MalwareOperationPlan {
-    $plan = [System.Collections.Generic.List[object]]::new()
+    $plan = New-Object System.Collections.ArrayList
 
     $entries = @(
         @{ Category = '파일 쓰기·수정'; Technique = 'T1222.001'; Action = 'Append'; Count = 3 },
@@ -406,11 +436,11 @@ function Get-MalwareOperationPlan {
     $counter = 1
     foreach ($entry in $entries) {
         for ($i = 1; $i -le $entry.Count; $i++) {
-            $plan.Add([PSCustomObject]@{
-                Id = ('{0}-{1:D2}' -f $entry.Technique, $counter);
-                Technique = $entry.Technique;
-                Category = $entry.Category;
-                Action = $entry.Action;
+            [void]$plan.Add([PSCustomObject]@{
+                Id = ('{0}-{1:D2}' -f $entry.Technique, $counter)
+                Technique = $entry.Technique
+                Category = $entry.Category
+                Action = $entry.Action
             })
             $counter++
         }
@@ -581,7 +611,7 @@ function ConvertTo-WorksheetXml {
         }
         $sheetData.Append('</row>') | Out-Null
     }
-    return "<worksheet xmlns='http://schemas.openxmlformats.org/spreadsheetml/2006/main'><sheetData>$sheetData</sheetData></worksheet>"
+    return "<worksheet xmlns='http://schemas.openxmlformats.org/spreadsheetml/2006/main'><sheetData>$($sheetData.ToString())</sheetData></worksheet>"
 }
 
 function New-SimpleWorkbook {
@@ -750,7 +780,7 @@ function Get-AreaSummary {
 Write-Host '=== 데이터 보호 성능평가 자동화 시작 ==='
 $normalRoot = Read-RequiredPath -PromptText '일반영역 폴더 경로를 입력하세요'
 $secureRoot = Read-RequiredPath -PromptText '보안영역 폴더 경로를 입력하세요'
-$reportRoot = Read-RequiredPath -PromptText '결과 데이터를 저장할 폴더 경로를 입력하세요 (폴더 또는 .xlsxm 경로 가능)'
+$reportRoot = Read-RequiredPath -PromptText '결과 데이터를 저장할 폴더 경로를 입력하세요 (폴더 또는 .xlsx 경로 가능)'
 
 if ($normalRoot -eq $secureRoot) {
     throw '일반영역과 보안영역 경로는 서로 달라야 합니다.'
@@ -769,7 +799,7 @@ Initialize-TestArea -AreaName 'SecureArea' -RootPath $secureRoot -DocumentPlan $
 
 Write-Host "테스트 데이터 생성 완료 (Seed: $seed)"
 
-$useFileTarget = $reportRoot -match '\\.xlsxm$'
+$useFileTarget = $reportRoot -match '\\.xlsx$'
 $reportDirectory = if ($useFileTarget) {
     $parent = Split-Path -Path $reportRoot -Parent
     if ([string]::IsNullOrWhiteSpace($parent)) { (Get-Location).Path } else { $parent }
@@ -806,28 +836,27 @@ foreach ($area in @('General','Secure')) {
 $baselineData | Export-Csv -Path $baselineCsv -NoTypeInformation -Encoding UTF8
 
 $atomicInfo = Ensure-AtomicToolkit
-$ranSimPath = Ensure-RanSim
-$calderaPath = Ensure-Caldera
+foreach ($msg in $atomicInfo.Messages) { Write-Host $msg -ForegroundColor Yellow }
+$ranSimInfo = Ensure-RanSim
+foreach ($msg in $ranSimInfo.Messages) { Write-Host $msg -ForegroundColor Yellow }
+$calderaInfo = Ensure-Caldera
+foreach ($msg in $calderaInfo.Messages) { Write-Host $msg -ForegroundColor Yellow }
 
 if ($atomicInfo.Module) {
     Write-Host "Invoke-AtomicRedTeam 모듈 버전: $($atomicInfo.Module.Version)" -ForegroundColor Cyan
 } else {
-    Write-Warning 'Invoke-AtomicRedTeam 모듈을 확인하지 못했습니다. 악성행위 시뮬레이션은 스크립트 내장 동작으로 대체됩니다.'
+    Write-Host 'Invoke-AtomicRedTeam 모듈이 없어 내장 악성 행위 시나리오만 실행합니다.' -ForegroundColor Yellow
 }
 if ($atomicInfo.AtomicsPath) {
     Write-Host "Atomics 폴더 위치: $($atomicInfo.AtomicsPath)" -ForegroundColor Cyan
-} else {
-    Write-Warning 'Atomics 폴더를 확보하지 못했습니다. 필요 시 수동으로 다운로드 후 환경 변수를 설정하세요.'
 }
-if ($ranSimPath) {
-    Write-Host "RanSim 경로: $ranSimPath" -ForegroundColor Cyan
+if ($ranSimInfo.Path) {
+    Write-Host "RanSim 경로: $($ranSimInfo.Path)" -ForegroundColor Cyan
 } else {
-    Write-Warning 'RanSim 실행 파일이 없어 랜섬웨어 시뮬레이션이 제한될 수 있습니다.'
+    Write-Host 'RanSim 실행 파일이 없어 내장 스냅샷 비교만 수행합니다.' -ForegroundColor Yellow
 }
-if ($calderaPath) {
-    Write-Host "Caldera 패키지 위치: $calderaPath" -ForegroundColor Cyan
-} else {
-    Write-Warning 'Caldera 패키지를 확인하지 못했습니다. 필요 시 수동 설치를 진행하세요.'
+if ($calderaInfo.Path) {
+    Write-Host "Caldera 패키지 위치: $($calderaInfo.Path)" -ForegroundColor Cyan
 }
 
 $malwarePlan = Get-MalwareOperationPlan
@@ -846,7 +875,7 @@ foreach ($area in @(@{Name='GeneralArea'; Key='General'; Root=$normalRoot}, @{Na
 $malwareCsv = Join-Path $csvFolder "Malware_Assessment_${timestamp}.csv"
 $malwareRecords | Export-Csv -Path $malwareCsv -NoTypeInformation -Encoding UTF8
 
-$ranSimResult = Invoke-RanSim -ExecutablePath $ranSimPath
+$ranSimResult = Invoke-RanSim -ExecutablePath $ranSimInfo.Path
 $preRansomSnapshots = @{
     General = Get-FileSnapshot -RootPath $normalRoot
     Secure = Get-FileSnapshot -RootPath $secureRoot
@@ -875,7 +904,7 @@ $malwareRecords | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $malwareJso
 $ranSimJson = Join-Path $jsonFolder "Ransomware_Assessment_${timestamp}.json"
 $ranSimRecords | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $ranSimJson -Encoding UTF8
 
-$excelPath = if ($useFileTarget) { $reportRoot } else { Join-Path $reportDirectory "DataProtection_Report_${timestamp}.xlsxm" }
+$excelPath = if ($useFileTarget) { $reportRoot } else { Join-Path $reportDirectory "DataProtection_Report_${timestamp}.xlsx" }
 $sheetData = @(
     @{ Name = 'Summary'; Rows = $summaryRows },
     @{ Name = 'Malware'; Rows = $malwareRecords },
@@ -886,8 +915,8 @@ New-SimpleWorkbook -Path $excelPath -Sheets $sheetData
 $docxPath = Join-Path $reportDirectory "DataProtection_Report_${timestamp}.docx"
 $atomicModuleVersion = if ($atomicInfo.Module) { $atomicInfo.Module.Version.ToString() } else { '확보 실패' }
 $atomicsLocation = if ($atomicInfo.AtomicsPath) { $atomicInfo.AtomicsPath } else { '확보 실패' }
-$ranSimDisplay = if ($ranSimPath) { $ranSimPath } else { '미확보' }
-$calderaDisplay = if ($calderaPath) { $calderaPath } else { '미확보' }
+$ranSimDisplay = if ($ranSimInfo.Path) { $ranSimInfo.Path } else { '미확보' }
+$calderaDisplay = if ($calderaInfo.Path) { $calderaInfo.Path } else { '미확보' }
 $paragraphs = @(
     '데이터 보호 성능평가 자동화 보고서',
     "생성 일시: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')",
@@ -899,7 +928,7 @@ $paragraphs = @(
     "Caldera 경로: $calderaDisplay",
     "악성행위 결과 CSV: $malwareCsv",
     "랜섬웨어 결과 CSV: $ranSimCsv",
-    '상세 데이터는 XLSXM/CSV/JSON 파일을 참조하세요.'
+    '상세 데이터는 XLSX/CSV/JSON 파일을 참조하세요.'
 )
 New-SimpleDocx -Path $docxPath -Paragraphs $paragraphs
 

@@ -15,7 +15,7 @@ function Read-PathPrompt {
     while ($true) {
         $value = Read-Host -Prompt $PromptText
         if ([string]::IsNullOrWhiteSpace($value)) {
-            Write-Warning "경로를 입력해야 합니다. 다시 입력해 주세요."
+            Write-Host "경로를 입력해야 합니다. 다시 입력해 주세요." -ForegroundColor Yellow
             continue
         }
         return $value.Trim()
@@ -37,7 +37,7 @@ function Clear-Directory {
             Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction Stop
         }
         catch {
-            Write-Warning "삭제하지 못한 항목이 있습니다: $($_.FullName) - $($_.Exception.Message)"
+            Write-Host "삭제하지 못한 항목이 있습니다: $($_.FullName) - $($_.Exception.Message)" -ForegroundColor Yellow
         }
     }
 }
@@ -160,13 +160,13 @@ $rand = [System.Random]::new($seed)
 
 $sizeOptions = @(65536, 262144, 1048576)
 $docExtensions = @('doc','docx','ppt','pptx','xls','xlsx','hwp','hwpx','txt')
-$documentPlan = [System.Collections.Generic.List[object]]::new()
+$documentPlan = New-Object System.Collections.ArrayList
 foreach ($ext in $docExtensions) {
     $size = $sizeOptions[$rand.Next(0, $sizeOptions.Count)]
     $fileName = "sample_{0}_{1}.{0}" -f $ext, $size
     $bytes = New-Object byte[] $size
     $rand.NextBytes($bytes)
-    $documentPlan.Add([PSCustomObject]@{ FileName = $fileName; Bytes = $bytes })
+    [void]$documentPlan.Add([PSCustomObject]@{ FileName = $fileName; Bytes = $bytes })
 }
 
 $usrClassBytes = New-Object byte[] 4096
