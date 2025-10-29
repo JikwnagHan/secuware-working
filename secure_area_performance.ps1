@@ -644,7 +644,7 @@ $analysisParagraphs = @(
     "생성 일시: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')",
     "보안영역 경로: $secureRoot",
     "저장장치 유형: $deviceType",
-    if ($deviceAttrs) { "장치 속성: $deviceAttrs" } else { '장치 속성: 자동 수집 실패' },
+    $(if ($deviceAttrs) { "장치 속성: $deviceAttrs" } else { '장치 속성: 자동 수집 실패' }),
     "총 파일 수: $($records.Count)",
     ''
 ) + (Build-AnalysisParagraphs -SummaryRows $summaryRows -SecurePath $secureRoot -DeviceType $deviceType -DeviceAttrs $deviceAttrs -Seed $seed)
