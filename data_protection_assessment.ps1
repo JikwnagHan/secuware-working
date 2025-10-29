@@ -10,7 +10,7 @@
     1. 일반영역/보안영역/결과 저장 위치를 입력합니다.
     2. 기존 데이터를 모두 삭제하고 문서/시스템 샘플을 동일하게 재생성합니다.
     3. RanSim, Atomic Red Team 모듈, Atomics 콘텐츠, Caldera 존재 여부를 점검합니다.
-    4. 7개 버킷 50개 악성행위 시뮬레이션을 자동으로 실행합니다.
+    4. 7개 버킷 30개 대표 악성행위 시뮬레이션을 자동으로 실행합니다.
     5. RanSim을 호출하여 랜섬웨어 침해 여부를 측정합니다.
     6. 모든 결과를 CSV, JSON, XLSXM, DOCX로 저장합니다.
 
@@ -79,6 +79,13 @@ function Write-Base64File {
     $folder = Split-Path -Path $Path -Parent
     Ensure-Directory -Path $folder
     $clean = ($Base64 -replace '\s', '')
+    $remainder = $clean.Length % 4
+    if ($remainder -eq 1) {
+        throw 'Base64 원문 길이가 올바르지 않습니다 (4의 배수 필요).'
+    }
+    elseif ($remainder -gt 0) {
+        $clean = $clean.PadRight($clean.Length + (4 - $remainder), '=')
+    }
     try {
         $bytes = [System.Convert]::FromBase64String($clean)
         [System.IO.File]::WriteAllBytes($Path, $bytes)
@@ -154,10 +161,10 @@ function Initialize-TestArea {
     Write-BytesFile -Path (Join-Path $sysPath 'system_like_UsrClass.dat') -Bytes ([byte[]]$UsrClassBytes.Clone())
     Write-BytesFile -Path (Join-Path $sysPath 'sample.dll') -Bytes ([byte[]]$DllBytes.Clone())
 
-    $pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/w8AAuMB9o0sRL8AAAAASUVORK5CYII='
+    $pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/wwAAgMBAJcC/wAAAABJRU5ErkJggg=='
     Write-Base64File -Path (Join-Path $sysPath 'image_1x1.png') -Base64 $pngBase64
 
-    $jpgBase64 = 'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAABKUlEQVR42mNkYGD4z0ADYKSdHFgAJkCoA9kCw1DsAKQKxPYB4l+AfAHKDCQZwGEQ+g7EMRQgfgbiM8DsRBPpGeB2EYRQrgPgikG8HYooRrAUJ9gHgFyoA4J8gfgLxH2AeRPA/E8ReyPgPiX4HYDYg3kNQEYjvA/G9QOwDyBZBvAbE1IB4BxL0B8l8D8T9B3AfEvID4D4hmA+JcgfgIE/wPxH0C8j0A8h0B8i0A8i0A8v8B8h0A8h0A8/8D8D0S8g8B8lcgHgXJXgPgfl/gdg5iPgPg3kPwPxNkHsC8hsgvgAk14H4D4hcA8lcgvgtED8FsA8hyA+FsQDwNxA/A/EzQPwFxJ0D8B8Q9AfIPIPwPxP0D8B8Q9AfINIPwPxP0Bcj0j3AxkBpGqpD4n4H4DUhoYGBgYHhiYmBiYGAAAMCEBm8VMa2UAAAAASUVORK5CYII='
+    $jpgBase64 = '/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAAkGBxISEhAQEBAQEA8QDxAQEA8PDxAPDxAQFREWFhURFRUYHSggGBolGxUVITEhJSkrLi4uFx8zODMsNygtLisBCgoKDQ0NDg0NDisZFRkrKysrKysrKysrKystKysrKysrKysrKysrKysrKysrKysrKysrKysrKysrKysrK//AABEIAJwBPgMBIgACEQEDEQH/xAAXAAADAQAAAAAAAAAAAAAAAAADBAUG/8QAHBAAAQQDAQAAAAAAAAAAAAAAAQACAxEEEiEx/8QAFwEAAwEAAAAAAAAAAAAAAAAAAQIDBf/EAB4RAAICAQUAAAAAAAAAAAAAAAABAgMEERITIUFR/9oADAMBAAIRAxEAPwDtVLwlh8zvP4STcQduPqbXaW3n1JcTzH//2Q=='
     Write-Base64File -Path (Join-Path $sysPath 'image_1x1.jpg') -Base64 $jpgBase64
 
     $zipPath = Join-Path $sysPath 'sample.zip'
@@ -382,28 +389,30 @@ function Ensure-Caldera {
 function Get-MalwareOperationPlan {
     $plan = [System.Collections.Generic.List[object]]::new()
 
-    $categories = @(
-        @{ Name = '파일 쓰기·수정'; Technique = 'T1222.001'; Action = 'Append'; Count = 5 },
-        @{ Name = '파일 쓰기·수정'; Technique = 'T1222.001'; Action = 'Overwrite'; Count = 5 },
-        @{ Name = '아카이브/인코딩'; Technique = 'T1560.001'; Action = 'Archive'; Count = 4 },
-        @{ Name = '아카이브/인코딩'; Technique = 'T1027'; Action = 'Base64'; Count = 4 },
-        @{ Name = '스크립팅 기반 조작'; Technique = 'T1059.003'; Action = 'ScriptCopy'; Count = 4 },
-        @{ Name = '스크립팅 기반 조작'; Technique = 'T1059.003'; Action = 'ScriptDelete'; Count = 4 },
-        @{ Name = '권한/속성 조작'; Technique = 'T1222.001'; Action = 'ToggleAttribute'; Count = 3 },
-        @{ Name = '권한/속성 조작'; Technique = 'T1098'; Action = 'Timestamp'; Count = 3 },
-        @{ Name = '정리/청소'; Technique = 'T1070'; Action = 'Cleanup'; Count = 5 },
-        @{ Name = '발견/열거'; Technique = 'T1083'; Action = 'Discovery'; Count = 5 },
-        @{ Name = '이동·복사·유출'; Technique = 'T1048'; Action = 'ExfilCopy'; Count = 8 }
+    $entries = @(
+        @{ Category = '파일 쓰기·수정'; Technique = 'T1222.001'; Action = 'Append'; Count = 3 },
+        @{ Category = '파일 쓰기·수정'; Technique = 'T1222.001'; Action = 'Overwrite'; Count = 3 },
+        @{ Category = '아카이브/인코딩'; Technique = 'T1560.001'; Action = 'Archive'; Count = 3 },
+        @{ Category = '아카이브/인코딩'; Technique = 'T1027'; Action = 'Base64'; Count = 3 },
+        @{ Category = '스크립팅 기반 조작'; Technique = 'T1059.003'; Action = 'ScriptCopy'; Count = 3 },
+        @{ Category = '스크립팅 기반 조작'; Technique = 'T1059.003'; Action = 'ScriptDelete'; Count = 3 },
+        @{ Category = '권한/속성 조작'; Technique = 'T1222.001'; Action = 'ToggleAttribute'; Count = 2 },
+        @{ Category = '권한/속성 조작'; Technique = 'T1098'; Action = 'Timestamp'; Count = 2 },
+        @{ Category = '정리/청소'; Technique = 'T1070'; Action = 'Cleanup'; Count = 3 },
+        @{ Category = '발견/열거'; Technique = 'T1083'; Action = 'Discovery'; Count = 3 },
+        @{ Category = '이동·복사·유출'; Technique = 'T1048'; Action = 'ExfilCopy'; Count = 2 }
     )
 
-    foreach ($cat in $categories) {
-        for ($i = 1; $i -le $cat.Count; $i++) {
+    $counter = 1
+    foreach ($entry in $entries) {
+        for ($i = 1; $i -le $entry.Count; $i++) {
             $plan.Add([PSCustomObject]@{
-                Id = "${($cat.Technique)}-$i"
-                Technique = $cat.Technique
-                Category = $cat.Name
-                Action = $cat.Action
+                Id = '{0}-{1:D2}' -f $entry.Technique, $counter
+                Technique = $entry.Technique
+                Category = $entry.Category
+                Action = $entry.Action
             })
+            $counter++
         }
     }
     return $plan

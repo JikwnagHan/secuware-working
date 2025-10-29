@@ -69,8 +69,15 @@ function Write-Base64File {
     )
     $folder = Split-Path -Path $Path -Parent
     Ensure-Directory -Path $folder
+    $clean = ($Base64 -replace '\s', '')
+    $remainder = $clean.Length % 4
+    if ($remainder -eq 1) {
+        throw 'Base64 원문 길이가 올바르지 않습니다 (4의 배수 필요).'
+    }
+    elseif ($remainder -gt 0) {
+        $clean = $clean.PadRight($clean.Length + (4 - $remainder), '=')
+    }
     try {
-        $clean = ($Base64 -replace '\s', '')
         $bytes = [System.Convert]::FromBase64String($clean)
         [System.IO.File]::WriteAllBytes($Path, $bytes)
     }
@@ -130,11 +137,10 @@ function Initialize-Area {
     Write-BytesFile -Path (Join-Path $sysPath 'system_like_UsrClass.dat') -Bytes ([byte[]]$UsrClassBytes.Clone())
     Write-BytesFile -Path (Join-Path $sysPath 'sample.dll') -Bytes ([byte[]]$DllBytes.Clone())
 
-    $pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/w8AAuMB9o0sRL8AAAAASUVORK5CYII='
+    $pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/wwAAgMBAJcC/wAAAABJRU5ErkJggg=='
     Write-Base64File -Path (Join-Path $sysPath 'image_1x1.png') -Base64 $pngBase64
-    $jpgBase64 = @'
-/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAAkGBxISEhUTEhIVFRUVFxUVFRUVFRUVFRUWFhUVFRUYHSggGBolGxUVITEhJSkrLi4uFx8zODMtNygtLisBCgoKDg0OGxAQGy0lHyUtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLf/AABEIAKgBLAMBIgACEQEDEQH/xAAaAAEAAwEBAQAAAAAAAAAAAAAAAQIDBAUG/8QAMRAAAgEDAwIEBQMFAQAAAAAAAAECEQMhMQQSQRNRYXGRBiKBkaGx8BQjQlJy4fDx/8QAFQEBAQAAAAAAAAAAAAAAAAAAAQP/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwD1gAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAH/9k=
-'@
+    $jpgBase64 = '/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAAkGBxISEhAQEBAQEA8QDxAQEA8PDxAPDxAQFREWFhURFRUYHSggGBolGxUVITEhJSkrLi4uFx8zODMsNygtLisBCgoKDQ0NDg0NDisZFRkrKysrKysrKysrKystKysrKysrKysrKysrKysrKysrKysrKysrKysrKysrKysrK//AABEIAJwBPgMBIgACEQEDEQH/xAAXAAADAQAAAAAAAAAAAAAAAAADBAUG/8QAHBAAAQQDAQAAAAAAAAAAAAAAAQACAxEEEiEx/8QAFwEAAwEAAAAAAAAAAAAAAAAAAQIDBf/EAB4RAAICAQUAAAAAAAAAAAAAAAABAgMEERITIUFR/9oADAMBAAIRAxEAPwDtVLwlh8zvP4STcQduPqbXaW3n1JcTzH//2Q=='
+
     Write-Base64File -Path (Join-Path $sysPath 'image_1x1.jpg') -Base64 $jpgBase64
 
     $zipPath = Join-Path $sysPath 'sample.zip'
