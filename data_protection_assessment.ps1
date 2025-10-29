@@ -761,11 +761,11 @@ function Get-AreaSummary {
         [string] $AreaName,
         [string] $Stage
     )
-    $areaRecords = $Records | Where-Object { $_.Area -eq $AreaName }
-    $changed = ($areaRecords | Where-Object { $_.Changed -eq $true }).Count
-    $newFiles = ($areaRecords | Where-Object { $_.Exists_Before -eq $false -and $_.Exists_After -eq $true }).Count
-    $missing = ($areaRecords | Where-Object { $_.Exists_Before -eq $true -and $_.Exists_After -eq $false }).Count
-    $intact = ($areaRecords | Where-Object { $_.Changed -eq $false }).Count
+    $areaRecords = @($Records | Where-Object { $_.Area -eq $AreaName })
+    $changed = (@($areaRecords | Where-Object { $_.Changed -eq $true })).Count
+    $newFiles = (@($areaRecords | Where-Object { $_.Exists_Before -eq $false -and $_.Exists_After -eq $true })).Count
+    $missing = (@($areaRecords | Where-Object { $_.Exists_Before -eq $true -and $_.Exists_After -eq $false })).Count
+    $intact = (@($areaRecords | Where-Object { $_.Changed -eq $false })).Count
     return [PSCustomObject]@{
         Stage = $Stage
         Area = $AreaName
