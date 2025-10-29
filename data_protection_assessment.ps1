@@ -407,10 +407,10 @@ function Get-MalwareOperationPlan {
     foreach ($entry in $entries) {
         for ($i = 1; $i -le $entry.Count; $i++) {
             $plan.Add([PSCustomObject]@{
-                Id = '{0}-{1:D2}' -f $entry.Technique, $counter
-                Technique = $entry.Technique
-                Category = $entry.Category
-                Action = $entry.Action
+                Id = ('{0}-{1:D2}' -f $entry.Technique, $counter);
+                Technique = $entry.Technique;
+                Category = $entry.Category;
+                Action = $entry.Action;
             })
             $counter++
         }
