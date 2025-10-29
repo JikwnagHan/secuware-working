@@ -420,22 +420,22 @@ function Get-MalwareOperationPlan {
     $plan = New-Object System.Collections.ArrayList
 
     $entries = @(
-        @{ Category = '파일 쓰기·수정'; Technique = 'T1222.001'; Action = 'Append'; Count = 3 },
-        @{ Category = '파일 쓰기·수정'; Technique = 'T1222.001'; Action = 'Overwrite'; Count = 3 },
-        @{ Category = '아카이브/인코딩'; Technique = 'T1560.001'; Action = 'Archive'; Count = 3 },
-        @{ Category = '아카이브/인코딩'; Technique = 'T1027'; Action = 'Base64'; Count = 3 },
-        @{ Category = '스크립팅 기반 조작'; Technique = 'T1059.003'; Action = 'ScriptCopy'; Count = 3 },
-        @{ Category = '스크립팅 기반 조작'; Technique = 'T1059.003'; Action = 'ScriptDelete'; Count = 3 },
-        @{ Category = '권한/속성 조작'; Technique = 'T1222.001'; Action = 'ToggleAttribute'; Count = 2 },
-        @{ Category = '권한/속성 조작'; Technique = 'T1098'; Action = 'Timestamp'; Count = 2 },
-        @{ Category = '정리/청소'; Technique = 'T1070'; Action = 'Cleanup'; Count = 3 },
-        @{ Category = '발견/열거'; Technique = 'T1083'; Action = 'Discovery'; Count = 3 },
-        @{ Category = '이동·복사·유출'; Technique = 'T1048'; Action = 'ExfilCopy'; Count = 2 }
+        [PSCustomObject]@{ Category = '파일 쓰기·수정'; Technique = 'T1222.001'; Action = 'Append'; Repeat = 3 },
+        [PSCustomObject]@{ Category = '파일 쓰기·수정'; Technique = 'T1222.001'; Action = 'Overwrite'; Repeat = 3 },
+        [PSCustomObject]@{ Category = '아카이브/인코딩'; Technique = 'T1560.001'; Action = 'Archive'; Repeat = 3 },
+        [PSCustomObject]@{ Category = '아카이브/인코딩'; Technique = 'T1027'; Action = 'Base64'; Repeat = 3 },
+        [PSCustomObject]@{ Category = '스크립팅 기반 조작'; Technique = 'T1059.003'; Action = 'ScriptCopy'; Repeat = 3 },
+        [PSCustomObject]@{ Category = '스크립팅 기반 조작'; Technique = 'T1059.003'; Action = 'ScriptDelete'; Repeat = 3 },
+        [PSCustomObject]@{ Category = '권한/속성 조작'; Technique = 'T1222.001'; Action = 'ToggleAttribute'; Repeat = 2 },
+        [PSCustomObject]@{ Category = '권한/속성 조작'; Technique = 'T1098'; Action = 'Timestamp'; Repeat = 2 },
+        [PSCustomObject]@{ Category = '정리/청소'; Technique = 'T1070'; Action = 'Cleanup'; Repeat = 3 },
+        [PSCustomObject]@{ Category = '발견/열거'; Technique = 'T1083'; Action = 'Discovery'; Repeat = 3 },
+        [PSCustomObject]@{ Category = '이동·복사·유출'; Technique = 'T1048'; Action = 'ExfilCopy'; Repeat = 2 }
     )
 
     $counter = 1
     foreach ($entry in $entries) {
-        for ($i = 1; $i -le $entry.Count; $i++) {
+        for ($i = 1; $i -le $entry.Repeat; $i++) {
             [void]$plan.Add([PSCustomObject]@{
                 Id = ('{0}-{1:D2}' -f $entry.Technique, $counter)
                 Technique = $entry.Technique
@@ -450,7 +450,8 @@ function Get-MalwareOperationPlan {
 
 function Select-RandomFile {
     param([string] $RootPath, [string[]] $Extensions)
-    $files = Get-ChildItem -LiteralPath $RootPath -File -Recurse | Where-Object { $Extensions -contains $_.Extension.TrimStart('.') }
+    $files = @(Get-ChildItem -LiteralPath $RootPath -File -Recurse |
+        Where-Object { $Extensions -contains $_.Extension.TrimStart('.') })
     if ($files.Count -eq 0) { return $null }
     return $files | Get-Random
 }
