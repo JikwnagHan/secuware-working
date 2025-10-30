@@ -77,17 +77,15 @@ function Get-Crc32 {
     $table = $script:Crc32Table
     if (-not $table) {
         $table = New-Object 'System.UInt32[]' 256
-        $poly  = [uint32]0xEDB88320
+        $poly  = [Convert]::ToUInt32('EDB88320', 16)
         for ($i = 0; $i -lt 256; $i++) {
             $crc = [uint32]$i
             for ($j = 0; $j -lt 8; $j++) {
-                $lsb  = [int64]$crc % 2
-                $half = [uint32]([math]::Floor([double]$crc / 2.0))
-                if ($lsb -ne 0) {
-                    $crc = [uint32]($half -bxor $poly)
+                if (($crc -band [uint32]1) -ne 0) {
+                    $crc = [uint32](($crc -shr 1) -bxor $poly)
                 }
                 else {
-                    $crc = $half
+                    $crc = [uint32]($crc -shr 1)
                 }
             }
             $table[$i] = $crc
@@ -95,15 +93,13 @@ function Get-Crc32 {
         $script:Crc32Table = $table
     }
 
-    $crcValue = [uint32]0xFFFFFFFF
+    $crcValue = [Convert]::ToUInt32('FFFFFFFF', 16)
     foreach ($b in $Bytes) {
-        $xorValue = [uint32]($crcValue -bxor [uint32]$b)
-        $index    = [int]([byte]$xorValue)
-        $shifted  = [uint32]([math]::Floor([double]$crcValue / 256.0))
-        $crcValue = [uint32]($table[$index] -bxor $shifted)
+        $index = [int](($crcValue -bxor [uint32]$b) -band [uint32]0xFF)
+        $crcValue = [uint32](($crcValue -shr 8) -bxor $table[$index])
     }
 
-    return [uint32]($crcValue -bxor [uint32]0xFFFFFFFF)
+    return [uint32]($crcValue -bxor [Convert]::ToUInt32('FFFFFFFF', 16))
 }
 
 function Write-SimpleZip {
